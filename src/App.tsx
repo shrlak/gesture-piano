@@ -7,14 +7,17 @@ import {
   diatonicChords,
   noteName,
   pentatonicNotes,
+  scaleNotes,
   voiceChord,
   type Voicing,
 } from './lib/theory'
 import { quantizeZone, type SmoothedHand } from './lib/gestures'
+import { CONTROL_KEYS, semitoneForCode } from './lib/keymap'
+import { PianoKeyboard } from './components/PianoKeyboard'
 import { useHandTracking } from './hooks/useHandTracking'
 import { CameraStage, type Scene } from './components/CameraStage'
 import { ChordRail } from './components/ChordRail'
-import { ControlPanel, type Settings } from './components/ControlPanel'
+import { ControlPanel, type PlayMode, type Settings } from './components/ControlPanel'
 import { HelpPanel } from './components/HelpPanel'
 
 /** Rungs on the melody ladder — two octaves of the pentatonic scale. */
@@ -22,6 +25,9 @@ const MELODY_STEPS = 10
 const SOLFA = ['도', '레', '미', '솔', '라']
 
 const DEFAULT_SETTINGS: Settings = {
+  mode: 'keyboard',
+  instrument: 'piano',
+  baseMidi: 48, // C3 — the lower row comps, the upper row carries the melody
   keyIndex: 7, // G — the key most Korean worship sets land in
   color: 'add9',
   patternId: 'arpeggio8',
@@ -48,6 +54,8 @@ export default function App() {
   const [degreeIndex, setDegreeIndex] = useState(0)
   const [progressionStep, setProgressionStep] = useState(0)
   const [beatInBar, setBeatInBar] = useState(0)
+  const [activeNotes, setActiveNotes] = useState<Set<number>>(() => new Set())
+  const [sustainOn, setSustainOn] = useState(false)
 
   const key = KEYS[settings.keyIndex]
   const chords = useMemo(() => diatonicChords(key, settings.color), [key, settings.color])
@@ -66,6 +74,12 @@ export default function App() {
   )
   const chordLabels = useMemo(() => chords.map((chord) => chord.symbol), [chords])
 
+  /** Pitch classes of the current key, marked on the on-screen keyboard. */
+  const scalePitchClasses = useMemo(
+    () => new Set(scaleNotes(key, 0, 7).map((note) => note % 12)),
+    [key],
+  )
+
   // ---------------------------------------------------------------------------
   // Realtime state. The tracking loop runs at camera rate, so anything it
   // touches lives in a ref; React state is only for things a human can read.
@@ -80,6 +94,11 @@ export default function App() {
   const melodyHeldRef = useRef<number | null>(null)
   const fistLatchRef = useRef(false)
   const progressionStepRef = useRef(0)
+  /** Keys physically held down right now. */
+  const heldNotesRef = useRef(new Set<number>())
+  /** Notes released but still ringing because the pedal is down. */
+  const pedalledRef = useRef(new Set<number>())
+  const sustainRef = useRef(false)
 
   const sceneRef = useRef<Scene>({
     hands: [],
@@ -99,6 +118,8 @@ export default function App() {
   melodyNotesRef.current = melodyNotes
   const progressionRef = useRef(progression)
   progressionRef.current = progression
+  const baseMidiRef = useRef(settings.baseMidi)
+  baseMidiRef.current = settings.baseMidi
 
   function getEngine(): AudioEngine {
     if (!engineRef.current) engineRef.current = new AudioEngine()
@@ -329,8 +350,15 @@ export default function App() {
     sequencer.setBpm(settingsRef.current.bpm)
     if (settingsRef.current.autoPlay) sequencer.start()
     setRunning(true)
-    setCameraOn(true)
+    // The camera only belongs to gesture mode; keyboard mode never asks for it.
+    if (settingsRef.current.mode === 'gesture') setCameraOn(true)
   }, [ensureSequencer, refreshPad])
+
+  // Leaving gesture mode must actually release the camera, not just hide it.
+  useEffect(() => {
+    if (settings.mode === 'keyboard') setCameraOn(false)
+    else if (running) setCameraOn(true)
+  }, [settings.mode, running])
 
   // Transport follows the auto-play switch once the engine is alive.
   useEffect(() => {
@@ -377,59 +405,131 @@ export default function App() {
   useEffect(() => () => void engineRef.current?.close(), [])
 
   // ---------------------------------------------------------------------------
-  // Keyboard fallback — the app has to stay playable with no camera at all.
+  // The computer keyboard as an instrument. Always live, camera or not.
   // ---------------------------------------------------------------------------
+
+  const noteDown = useCallback(async (midi: number, velocity = 0.7) => {
+    const engine = getEngine()
+    // Playing a key is a user gesture, so it may legally wake the audio context.
+    if (!engine.ready) await engine.start()
+    engine.holdNote(`key-${midi}`, midi, velocity, settingsRef.current.instrument)
+    heldNotesRef.current.add(midi)
+    setActiveNotes(new Set(heldNotesRef.current))
+  }, [])
+
+  const noteUp = useCallback((midi: number) => {
+    // With the pedal down the key lifts but the note keeps ringing.
+    if (sustainRef.current) {
+      pedalledRef.current.add(midi)
+    } else {
+      getEngine().releaseNote(`key-${midi}`)
+    }
+    heldNotesRef.current.delete(midi)
+    setActiveNotes(new Set(heldNotesRef.current))
+  }, [])
+
+  const releasePedal = useCallback(() => {
+    sustainRef.current = false
+    const engine = getEngine()
+    for (const midi of pedalledRef.current) {
+      // Keys still physically down keep sounding; only pedalled ones damp.
+      if (!heldNotesRef.current.has(midi)) engine.releaseNote(`key-${midi}`)
+    }
+    pedalledRef.current.clear()
+    setSustainOn(false)
+  }, [])
+
   useEffect(() => {
-    const MELODY_KEYS = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i']
-
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return
       const target = event.target as HTMLElement | null
+      // Only text entry swallows keys. Buttons must NOT, or the keyboard would
+      // go dead the moment the player clicks a control and it keeps focus.
       if (target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
 
-      const engine = getEngine()
-      const digit = Number(event.key)
-      if (digit >= 1 && digit <= 7) {
-        selectDegree(digit - 1)
-        if (!settingsRef.current.autoPlay && engine.ready) strikeChord(0.7)
+      const semitone = semitoneForCode(event.code)
+      if (semitone !== undefined) {
+        event.preventDefault()
+        if (event.repeat) return // auto-repeat would machine-gun the note
+        void noteDown(baseMidiRef.current + semitone)
         return
       }
 
-      const melodyIndex = MELODY_KEYS.indexOf(event.key.toLowerCase())
-      if (melodyIndex >= 0 && engine.ready) {
-        event.preventDefault()
-        melodyStepRef.current = melodyIndex
-        sceneRef.current.melodyStep = melodyIndex
-        sceneRef.current.melodyActive = true
-        engine.holdNote(`kbd-${melodyIndex}`, melodyNotesRef.current[melodyIndex], 0.65)
-        return
-      }
+      // Space and Enter are how a focused button gets activated, so when one
+      // has focus they belong to the button, not to the instrument.
+      const buttonFocused = document.activeElement?.tagName === 'BUTTON'
 
-      if (event.key === 'Enter') {
-        if (engine.ready) strikeChord(0.75)
-      } else if (event.key === ' ') {
-        event.preventDefault()
-        setSettings((current) => ({ ...current, autoPlay: !current.autoPlay }))
-      } else if (event.key === 'Escape') {
-        panic()
+      switch (event.code) {
+        case CONTROL_KEYS.sustain:
+          if (buttonFocused) return
+          event.preventDefault()
+          if (!sustainRef.current) {
+            sustainRef.current = true
+            setSustainOn(true)
+          }
+          break
+        case CONTROL_KEYS.strikeChord:
+          if (buttonFocused) return
+          if (getEngine().ready) strikeChord(0.75)
+          break
+        case CONTROL_KEYS.chordDown:
+          event.preventDefault()
+          selectDegree((degreeRef.current + 6) % 7)
+          break
+        case CONTROL_KEYS.chordUp:
+          event.preventDefault()
+          selectDegree((degreeRef.current + 1) % 7)
+          break
+        case CONTROL_KEYS.octaveDown:
+          event.preventDefault()
+          setSettings((current) => ({
+            ...current,
+            baseMidi: Math.max(24, current.baseMidi - 12),
+          }))
+          break
+        case CONTROL_KEYS.octaveUp:
+          event.preventDefault()
+          setSettings((current) => ({
+            ...current,
+            baseMidi: Math.min(72, current.baseMidi + 12),
+          }))
+          break
+        case CONTROL_KEYS.toggleAccompaniment:
+          setSettings((current) => ({ ...current, autoPlay: !current.autoPlay }))
+          break
+        case CONTROL_KEYS.panic:
+          panic()
+          break
       }
     }
 
     const onKeyUp = (event: KeyboardEvent) => {
-      const melodyIndex = MELODY_KEYS.indexOf(event.key.toLowerCase())
-      if (melodyIndex >= 0) {
-        getEngine().releaseNote(`kbd-${melodyIndex}`)
-        sceneRef.current.melodyActive = false
+      const semitone = semitoneForCode(event.code)
+      if (semitone !== undefined) {
+        noteUp(baseMidiRef.current + semitone)
+        return
       }
+      if (event.code === CONTROL_KEYS.sustain) releasePedal()
+    }
+
+    // A lost focus (alt-tab mid-chord) would otherwise leave notes stuck on.
+    const onBlur = () => {
+      const engine = getEngine()
+      for (const midi of heldNotesRef.current) engine.releaseNote(`key-${midi}`)
+      heldNotesRef.current.clear()
+      setActiveNotes(new Set())
+      releasePedal()
     }
 
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
     }
-  }, [selectDegree, strikeChord, panic])
+  }, [noteDown, noteUp, releasePedal, selectDegree, strikeChord, panic])
 
   // ---------------------------------------------------------------------------
 
@@ -455,8 +555,9 @@ export default function App() {
             손으로 드리는 <span className="text-glow-400">찬양 반주</span>
           </h1>
           <p className="mt-1.5 max-w-xl text-sm text-white/50">
-            건반 없이, 카메라 앞에서 손을 움직여 코드와 멜로디를 연주합니다. 조성과 반주 패턴만
-            정해 두면 어떤 손짓도 화음에서 벗어나지 않습니다.
+            {settings.mode === 'keyboard'
+              ? '컴퓨터 키보드가 그대로 건반이 됩니다. 피아노와 신디 중에 고르고, 자동 반주를 켠 채 멜로디만 연주해 보세요.'
+              : '카메라 앞에서 손을 움직여 코드와 멜로디를 연주합니다. 조성과 반주 패턴만 정해 두면 어떤 손짓도 화음에서 벗어나지 않습니다.'}
           </p>
         </div>
 
@@ -471,13 +572,15 @@ export default function App() {
             </button>
           ) : (
             <>
-              <button
-                type="button"
-                onClick={() => setCameraOn((value) => !value)}
-                className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold text-white/80 transition hover:border-white/35"
-              >
-                {cameraOn ? '카메라 끄기' : '카메라 켜기'}
-              </button>
+              {settings.mode === 'gesture' && (
+                <button
+                  type="button"
+                  onClick={() => setCameraOn((value) => !value)}
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm font-semibold text-white/80 transition hover:border-white/35"
+                >
+                  {cameraOn ? '카메라 끄기' : '카메라 켜기'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={stopSession}
@@ -492,17 +595,31 @@ export default function App() {
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <main className="space-y-4">
-          <CameraStage
-            setVideo={setVideo}
-            sceneRef={sceneRef}
-            split={settings.split}
-            chordLabels={chordLabels}
-            melodyLabels={melodyLabels}
-            mirror={settings.mirror}
-            active={cameraOn && status === 'running'}
-          />
+          {settings.mode === 'keyboard' ? (
+            <PianoKeyboard
+              baseMidi={settings.baseMidi}
+              activeNotes={activeNotes}
+              scalePitchClasses={scalePitchClasses}
+              useFlats={key.useFlats}
+              onNoteDown={(midi) => void noteDown(midi)}
+              onNoteUp={noteUp}
+            />
+          ) : (
+            <CameraStage
+              setVideo={setVideo}
+              sceneRef={sceneRef}
+              split={settings.split}
+              chordLabels={chordLabels}
+              melodyLabels={melodyLabels}
+              mirror={settings.mirror}
+              active={cameraOn && status === 'running'}
+            />
+          )}
 
           <StatusStrip
+            mode={settings.mode}
+            sustainOn={sustainOn}
+            baseMidi={settings.baseMidi}
             status={status}
             error={error}
             fps={fps}
@@ -567,7 +684,7 @@ export default function App() {
             the page far past the camera view. */}
         <aside className="space-y-3 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:overflow-y-auto lg:pr-1">
           <ControlPanel settings={settings} onChange={updateSetting} />
-          <HelpPanel />
+          <HelpPanel mode={settings.mode} />
         </aside>
       </div>
 
@@ -579,22 +696,46 @@ export default function App() {
 }
 
 function StatusStrip({
+  mode,
+  sustainOn,
+  baseMidi,
   status,
   error,
   fps,
   cameraOn,
   running,
 }: {
+  mode: PlayMode
+  sustainOn: boolean
+  baseMidi: number
   status: string
   error: string | null
   fps: number
   cameraOn: boolean
   running: boolean
 }) {
+  if (mode === 'keyboard') {
+    const octave = Math.floor(baseMidi / 12) - 1
+    return (
+      <p className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm text-white/60">
+        <span className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-mint-400" />
+          건반 모드 · C{octave}부터
+        </span>
+        <span className="text-white/35">↑↓ 옥타브 · ←→ 코드 · Space 페달</span>
+        {sustainOn && (
+          <span className="rounded-lg bg-glow-400/20 px-2 py-0.5 text-xs font-bold text-glow-400">
+            페달 ON
+          </span>
+        )}
+      </p>
+    )
+  }
+
   if (error) {
     return (
       <p className="rounded-2xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
-        {error} — 카메라 없이도 아래 코드 버튼과 키보드로 연주할 수 있습니다.
+        {error} — 건반 모드로 바꾸면 카메라 없이 그대로 연주할 수 있습니다.
       </p>
     )
   }
@@ -602,7 +743,7 @@ function StatusStrip({
   const label = !running
     ? '대기 중 · 연주 시작을 눌러 주세요'
     : !cameraOn
-      ? '카메라 꺼짐 · 버튼과 키보드로 연주 중'
+      ? '카메라 꺼짐 · 코드 버튼과 키보드로 연주 중'
       : status === 'loading'
         ? '손 인식 모델을 불러오는 중…'
         : status === 'running'

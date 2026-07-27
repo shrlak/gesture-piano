@@ -1,8 +1,16 @@
 import type { ReactNode } from 'react'
-import { KEYS, PROGRESSIONS, type ChordColor } from '../lib/theory'
+import { KEYS, PROGRESSIONS, noteName, type ChordColor } from '../lib/theory'
 import { PATTERNS } from '../lib/patterns'
+import type { Instrument } from '../lib/audio'
+
+/** How the player drives the app: camera gestures, or the computer keyboard. */
+export type PlayMode = 'gesture' | 'keyboard'
 
 export interface Settings {
+  mode: PlayMode
+  instrument: Instrument
+  /** MIDI note of the leftmost computer-keyboard key. */
+  baseMidi: number
   keyIndex: number
   color: ChordColor
   patternId: string
@@ -54,6 +62,40 @@ function Field({
   )
 }
 
+/**
+ * Same look as `Field`, but a group rather than a `<label>`. A label wrapping a
+ * row of buttons folds its text into every button's accessible name and makes
+ * clicking the caption press the first button, so button grids use this.
+ */
+function Group({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: ReactNode
+}) {
+  return (
+    <div role="group" aria-label={label} className="space-y-1.5">
+      <span className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-medium text-white/80">{label}</span>
+        {hint && <span className="text-xs tabular-nums text-white/40">{hint}</span>}
+      </span>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * Returns focus to the page after a mouse click so the computer keyboard goes
+ * back to playing notes instead of re-triggering the button on Space/Enter.
+ * Keyboard users never fire pointer events, so their focus ring is untouched.
+ */
+function blurOnPointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+  event.currentTarget.blur()
+}
+
 const selectClass =
   'w-full rounded-xl border border-white/12 bg-sanctuary-900 px-3 py-2 text-sm text-white outline-none transition focus:border-glow-400/70'
 
@@ -74,6 +116,7 @@ function Toggle({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
+      onPointerUp={blurOnPointerUp}
       className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-left transition hover:border-white/25"
     >
       <span>
@@ -97,6 +140,16 @@ function Toggle({
   )
 }
 
+const MODE_OPTIONS: Array<{ value: PlayMode; label: string; hint: string }> = [
+  { value: 'gesture', label: '제스처', hint: '카메라 · 손동작' },
+  { value: 'keyboard', label: '건반', hint: '컴퓨터 키보드' },
+]
+
+const INSTRUMENT_OPTIONS: Array<{ value: Instrument; label: string; hint: string }> = [
+  { value: 'piano', label: '피아노', hint: '치면 사라지는 소리' },
+  { value: 'synth', label: '신디', hint: '누른 만큼 지속' },
+]
+
 const COLOR_OPTIONS: Array<{ value: ChordColor; label: string; hint: string }> = [
   { value: 'triad', label: '3화음', hint: '기본' },
   { value: 'add9', label: 'add9', hint: '넓게' },
@@ -109,6 +162,68 @@ export function ControlPanel({ settings, onChange }: Props) {
 
   return (
     <div className="space-y-3">
+      <Section title="연주 방식">
+        <Group label="입력">
+          <div className="grid grid-cols-2 gap-1.5">
+            {MODE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => onChange('mode', option.value)}
+                onPointerUp={blurOnPointerUp}
+                className={[
+                  'rounded-xl border px-2 py-2.5 text-center transition',
+                  settings.mode === option.value
+                    ? 'border-glow-400 bg-glow-400/15 text-glow-400'
+                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25',
+                ].join(' ')}
+              >
+                <span className="block text-sm font-semibold">{option.label}</span>
+                <span className="block text-[0.6rem] text-white/35">{option.hint}</span>
+              </button>
+            ))}
+          </div>
+        </Group>
+
+        <Group label="악기 (내가 치는 소리)">
+          <div className="grid grid-cols-2 gap-1.5">
+            {INSTRUMENT_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => onChange('instrument', option.value)}
+                onPointerUp={blurOnPointerUp}
+                className={[
+                  'rounded-xl border px-2 py-2.5 text-center transition',
+                  settings.instrument === option.value
+                    ? 'border-mint-400 bg-mint-400/15 text-mint-400'
+                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25',
+                ].join(' ')}
+              >
+                <span className="block text-sm font-semibold">{option.label}</span>
+                <span className="block text-[0.6rem] text-white/35">{option.hint}</span>
+              </button>
+            ))}
+          </div>
+        </Group>
+
+        {settings.mode === 'keyboard' && (
+          <Field
+            label="건반 옥타브"
+            hint={`${noteName(settings.baseMidi % 12, false)}${Math.floor(settings.baseMidi / 12) - 1} 부터`}
+          >
+            <input
+              type="range"
+              min={24}
+              max={72}
+              step={12}
+              value={settings.baseMidi}
+              onChange={(event) => onChange('baseMidi', Number(event.target.value))}
+            />
+          </Field>
+        )}
+      </Section>
+
       <Section title="조성 · 화성">
         <Field label="키 (조)" hint={`${KEYS[settings.keyIndex].name} 장조`}>
           <select
@@ -124,13 +239,14 @@ export function ControlPanel({ settings, onChange }: Props) {
           </select>
         </Field>
 
-        <Field label="화음 색깔">
+        <Group label="화음 색깔">
           <div className="grid grid-cols-4 gap-1.5">
             {COLOR_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 onClick={() => onChange('color', option.value)}
+                onPointerUp={blurOnPointerUp}
                 className={[
                   'rounded-xl border px-1 py-2 text-center transition',
                   settings.color === option.value
@@ -143,7 +259,7 @@ export function ControlPanel({ settings, onChange }: Props) {
               </button>
             ))}
           </div>
-        </Field>
+        </Group>
       </Section>
 
       <Section title="반주">

@@ -7,7 +7,10 @@
 
 import { midiToFrequency } from './theory'
 
-export type VoiceName = 'piano' | 'pad' | 'bass' | 'bell'
+export type VoiceName = 'piano' | 'pad' | 'bass' | 'bell' | 'synth'
+
+/** What the player's own keys sound like, independent of the accompaniment. */
+export type Instrument = 'piano' | 'synth'
 
 export interface ActiveVoice {
   /** Stop the voice, letting it release naturally. */
@@ -98,6 +101,7 @@ export class AudioEngine {
       pad: 0.5,
       bass: 0.75,
       bell: 0.6,
+      synth: 0.55,
     }
     for (const [name, level] of Object.entries(levels) as [VoiceName, number][]) {
       const bus = context.createGain()
@@ -401,13 +405,107 @@ export class AudioEngine {
   }
 
   /**
-   * Holds a note under a stable id, replacing whatever was sounding there. Used
-   * for the melody hand, where a note rings until the pinch is released.
+   * Sustained synth lead — the 신디 sound a worship keyboardist plays over the
+   * piano. Unlike the piano voice it does not decay: it holds at full body
+   * until the key comes up, which is what makes held chords and long melody
+   * notes possible.
    */
-  holdNote(id: string, midi: number, velocity: number) {
+  playSynth(
+    midi: number,
+    options: { velocity?: number; when?: number } = {},
+  ): ActiveVoice | null {
+    const context = this.context
+    const bus = this.bus('synth')
+    if (!context || !bus) return null
+
+    const velocity = Math.min(1, Math.max(0.05, options.velocity ?? 0.6))
+    const when = options.when ?? context.currentTime
+    const frequency = midiToFrequency(midi)
+
+    const amp = context.createGain()
+    amp.gain.value = 0
+    amp.connect(bus)
+
+    const filter = context.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.Q.value = 6
+    // Filter envelope: a bright bloom that settles back, the classic synth "wow".
+    const peakCutoff = Math.min(11000, frequency * 9 + velocity * 3500)
+    filter.frequency.setValueAtTime(frequency * 2, when)
+    filter.frequency.linearRampToValueAtTime(peakCutoff, when + 0.07)
+    filter.frequency.exponentialRampToValueAtTime(
+      Math.max(frequency * 3, peakCutoff * 0.42),
+      when + 0.55,
+    )
+    filter.connect(amp)
+
+    const oscillators: OscillatorNode[] = []
+    // Two detuned saws for width, a square underneath for body.
+    const layers: Array<[OscillatorType, number, number]> = [
+      ['sawtooth', -9, 0.16],
+      ['sawtooth', 9, 0.16],
+      ['square', 0, 0.09],
+    ]
+    for (const [type, detune, level] of layers) {
+      const osc = context.createOscillator()
+      osc.type = type
+      osc.frequency.value = frequency
+      osc.detune.value = detune
+      const gain = context.createGain()
+      gain.gain.value = level
+      osc.connect(gain)
+      gain.connect(filter)
+      osc.start(when)
+      oscillators.push(osc)
+    }
+
+    amp.gain.setValueAtTime(0.0001, when)
+    amp.gain.linearRampToValueAtTime(velocity * 0.42, when + 0.02)
+    amp.gain.linearRampToValueAtTime(velocity * 0.34, when + 0.25)
+
+    const stopAll = (at: number) => {
+      for (const osc of oscillators) {
+        try {
+          osc.stop(at)
+        } catch {
+          /* already stopped */
+        }
+      }
+    }
+
+    const voice: ActiveVoice = {
+      endsAt: Number.POSITIVE_INFINITY,
+      release: (at) => {
+        amp.gain.cancelScheduledValues(at)
+        amp.gain.setValueAtTime(amp.gain.value, at)
+        amp.gain.setTargetAtTime(0.0001, at, 0.09)
+        stopAll(at + 0.8)
+        this.active.delete(voice)
+      },
+      kill: () => {
+        const now = context.currentTime
+        amp.gain.cancelScheduledValues(now)
+        amp.gain.setTargetAtTime(0.0001, now, 0.02)
+        stopAll(now + 0.2)
+        this.active.delete(voice)
+      },
+    }
+    this.active.add(voice)
+    return voice
+  }
+
+  /**
+   * Holds a note under a stable id, replacing whatever was sounding there. Used
+   * by both the melody hand and the computer keyboard: the note rings until the
+   * matching `releaseNote` call.
+   */
+  holdNote(id: string, midi: number, velocity: number, instrument: Instrument = 'piano') {
     const existing = this.sustaining.get(id)
     if (existing) existing.release(this.currentTime)
-    const voice = this.playPiano(midi, { velocity, hold: 4 })
+    const voice =
+      instrument === 'synth'
+        ? this.playSynth(midi, { velocity })
+        : this.playPiano(midi, { velocity, hold: 4 })
     if (voice) this.sustaining.set(id, voice)
   }
 

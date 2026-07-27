@@ -1,3 +1,5 @@
+import type { PlayMode } from './ControlPanel'
+
 interface Row {
   icon: string
   title: string
@@ -41,10 +43,13 @@ const MELODY_HAND: Row[] = [
 ]
 
 const KEYBOARD: Array<[string, string]> = [
-  ['1 ~ 7', '코드 1도~7도 선택'],
-  ['Q W E R T Y U I', '멜로디 음 (낮은음 → 높은음)'],
-  ['Space', '자동 반주 시작 / 정지'],
+  ['Z S X D C V G B …', '아래 두 줄 = 낮은 옥타브 (흰건반 / 검은건반)'],
+  ['Q 2 W 3 E R 5 T …', '위 두 줄 = 한 옥타브 위'],
+  ['Space', '서스테인 페달 (누르고 있는 동안)'],
+  ['↑ ↓', '건반 옥타브 올리기 / 내리기'],
+  ['← →', '반주 코드 바꾸기'],
   ['Enter', '현재 코드 한 번 치기'],
+  ['\\', '자동 반주 시작 / 정지'],
   ['Esc', '모든 소리 정지'],
 ]
 
@@ -69,7 +74,8 @@ function List({ title, rows }: { title: string; rows: Row[] }) {
   )
 }
 
-export function HelpPanel() {
+export function HelpPanel({ mode }: { mode: PlayMode }) {
+  const keyboardMode = mode === 'keyboard'
   return (
     <details
       open
@@ -81,18 +87,33 @@ export function HelpPanel() {
       </summary>
 
       <p className="mt-2 mb-4 text-xs leading-relaxed text-white/50">
-        화면은 왼쪽 <span className="text-glow-400">코드 영역</span>과 오른쪽{' '}
-        <span className="text-mint-400">멜로디 영역</span>으로 나뉩니다. 어느 손이든 영역에
-        들어간 손이 그 역할을 맡습니다. 한 손만으로도 연주할 수 있어요.
+        {keyboardMode ? (
+          <>
+            컴퓨터 키보드의 <span className="text-glow-400">아래 두 줄</span>과{' '}
+            <span className="text-glow-400">위 두 줄</span>이 각각 한 옥타브씩 건반이 됩니다.
+            흰건반은 Z·X·C…, 검은건반은 그 사이의 S·D·G…예요. 화면의 건반을 마우스로 눌러도
+            소리가 납니다.
+          </>
+        ) : (
+          <>
+            화면은 왼쪽 <span className="text-glow-400">코드 영역</span>과 오른쪽{' '}
+            <span className="text-mint-400">멜로디 영역</span>으로 나뉩니다. 어느 손이든 영역에
+            들어간 손이 그 역할을 맡습니다. 한 손만으로도 연주할 수 있어요.
+          </>
+        )}
       </p>
 
       <div className="space-y-4">
-        <List title="코드 영역 · 왼쪽" rows={CHORD_HAND} />
-        <List title="멜로디 영역 · 오른쪽" rows={MELODY_HAND} />
+        {!keyboardMode && (
+          <>
+            <List title="코드 영역 · 왼쪽" rows={CHORD_HAND} />
+            <List title="멜로디 영역 · 오른쪽" rows={MELODY_HAND} />
+          </>
+        )}
 
         <div className="space-y-2">
           <h3 className="text-xs font-semibold uppercase tracking-[0.2em] text-white/40">
-            키보드 (카메라 없이)
+            {keyboardMode ? '키보드 배치' : '키보드 (카메라 없이)'}
           </h3>
           <dl className="space-y-1.5">
             {KEYBOARD.map(([keys, meaning]) => (
@@ -109,9 +130,20 @@ export function HelpPanel() {
         <div className="rounded-xl border border-mint-400/25 bg-mint-400/8 p-3">
           <p className="text-xs font-semibold text-mint-400">반주 팁</p>
           <p className="mt-1 text-xs leading-relaxed text-white/55">
-            찬양 인도자를 따라갈 때는 <b className="text-white/80">자동 반주</b>를 켜고 코드만
-            짚어 주세요. 간주에서는 <b className="text-white/80">진행 자동 넘김</b>을 켜면 손이
-            자유로워져 멜로디에 집중할 수 있습니다.
+            {keyboardMode ? (
+              <>
+                <b className="text-white/80">자동 반주</b>를 켜고{' '}
+                <b className="text-white/80">←→</b>로 코드만 바꾸면, 오른손은 멜로디에만 집중할
+                수 있습니다. 흰건반에 찍힌 점이 지금 조성의 음이라 그 점만 밟아도 곡이 됩니다.
+                지속되는 소리가 필요하면 <b className="text-white/80">신디</b>로 바꿔 보세요.
+              </>
+            ) : (
+              <>
+                찬양 인도자를 따라갈 때는 <b className="text-white/80">자동 반주</b>를 켜고
+                코드만 짚어 주세요. 간주에서는 <b className="text-white/80">진행 자동 넘김</b>을
+                켜면 손이 자유로워져 멜로디에 집중할 수 있습니다.
+              </>
+            )}
           </p>
         </div>
       </div>
