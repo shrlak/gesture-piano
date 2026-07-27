@@ -12,7 +12,7 @@ import {
   type Voicing,
 } from './lib/theory'
 import { quantizeZone, type SmoothedHand } from './lib/gestures'
-import { CONTROL_KEYS, semitoneForCode } from './lib/keymap'
+import { ARROW_KEYS, CONTROL_KEYS, chordIndexForCode, semitoneForCode } from './lib/keymap'
 import { PianoKeyboard } from './components/PianoKeyboard'
 import { useHandTracking } from './hooks/useHandTracking'
 import { CameraStage, type Scene } from './components/CameraStage'
@@ -27,7 +27,7 @@ const SOLFA = ['도', '레', '미', '솔', '라']
 const DEFAULT_SETTINGS: Settings = {
   mode: 'keyboard',
   instrument: 'piano',
-  baseMidi: 48, // C3 — the lower row comps, the upper row carries the melody
+  baseMidi: 60, // C4 — middle C under the left hand, melody range above it
   keyIndex: 7, // G — the key most Korean worship sets land in
   color: 'add9',
   patternId: 'arpeggio8',
@@ -455,6 +455,22 @@ export default function App() {
         return
       }
 
+      // Number row picks a chord degree outright, no cycling.
+      const chordIndex = chordIndexForCode(event.code)
+      if (chordIndex >= 0) {
+        event.preventDefault()
+        if (event.repeat) return
+        selectDegree(chordIndex)
+        if (!settingsRef.current.autoPlay && getEngine().ready) strikeChord(0.7)
+        return
+      }
+
+      const shiftOctave = (delta: number) =>
+        setSettings((current) => ({
+          ...current,
+          baseMidi: clamp(current.baseMidi + delta * 12, 24, 84),
+        }))
+
       // Space and Enter are how a focused button gets activated, so when one
       // has focus they belong to the button, not to the instrument.
       const buttonFocused = document.activeElement?.tagName === 'BUTTON'
@@ -472,27 +488,23 @@ export default function App() {
           if (buttonFocused) return
           if (getEngine().ready) strikeChord(0.75)
           break
-        case CONTROL_KEYS.chordDown:
+        case CONTROL_KEYS.octaveDown:
+        case ARROW_KEYS.octaveDown:
+          event.preventDefault()
+          if (!event.repeat) shiftOctave(-1)
+          break
+        case CONTROL_KEYS.octaveUp:
+        case ARROW_KEYS.octaveUp:
+          event.preventDefault()
+          if (!event.repeat) shiftOctave(1)
+          break
+        case ARROW_KEYS.chordDown:
           event.preventDefault()
           selectDegree((degreeRef.current + 6) % 7)
           break
-        case CONTROL_KEYS.chordUp:
+        case ARROW_KEYS.chordUp:
           event.preventDefault()
           selectDegree((degreeRef.current + 1) % 7)
-          break
-        case CONTROL_KEYS.octaveDown:
-          event.preventDefault()
-          setSettings((current) => ({
-            ...current,
-            baseMidi: Math.max(24, current.baseMidi - 12),
-          }))
-          break
-        case CONTROL_KEYS.octaveUp:
-          event.preventDefault()
-          setSettings((current) => ({
-            ...current,
-            baseMidi: Math.min(72, current.baseMidi + 12),
-          }))
           break
         case CONTROL_KEYS.toggleAccompaniment:
           setSettings((current) => ({ ...current, autoPlay: !current.autoPlay }))
@@ -722,7 +734,7 @@ function StatusStrip({
           <span className="h-2 w-2 rounded-full bg-mint-400" />
           건반 모드 · C{octave}부터
         </span>
-        <span className="text-white/35">↑↓ 옥타브 · ←→ 코드 · Space 페달</span>
+        <span className="text-white/35">Z·X 옥타브 · 1~7 코드 · Space 페달</span>
         {sustainOn && (
           <span className="rounded-lg bg-glow-400/20 px-2 py-0.5 text-xs font-bold text-glow-400">
             페달 ON

@@ -43,11 +43,12 @@ const MELODY_HAND: Row[] = [
 ]
 
 const KEYBOARD: Array<[string, string]> = [
-  ['Z S X D C V G B …', '아래 두 줄 = 낮은 옥타브 (흰건반 / 검은건반)'],
-  ['Q 2 W 3 E R 5 T …', '위 두 줄 = 한 옥타브 위'],
+  ['A S D F G H J K L ;', '흰건반 (도 레 미 파 솔 라 시 도 레 미)'],
+  ['W E · T Y U · O P', '검은건반 (흰건반 사이 그 자리 그대로)'],
+  ['X', '옥타브 ↑'],
+  ['Z', '옥타브 ↓'],
   ['Space', '서스테인 페달 (누르고 있는 동안)'],
-  ['↑ ↓', '건반 옥타브 올리기 / 내리기'],
-  ['← →', '반주 코드 바꾸기'],
+  ['1 ~ 7', '반주 코드 1도~7도 바로 선택'],
   ['Enter', '현재 코드 한 번 치기'],
   ['\\', '자동 반주 시작 / 정지'],
   ['Esc', '모든 소리 정지'],
@@ -89,10 +90,10 @@ export function HelpPanel({ mode }: { mode: PlayMode }) {
       <p className="mt-2 mb-4 text-xs leading-relaxed text-white/50">
         {keyboardMode ? (
           <>
-            컴퓨터 키보드의 <span className="text-glow-400">아래 두 줄</span>과{' '}
-            <span className="text-glow-400">위 두 줄</span>이 각각 한 옥타브씩 건반이 됩니다.
-            흰건반은 Z·X·C…, 검은건반은 그 사이의 S·D·G…예요. 화면의 건반을 마우스로 눌러도
-            소리가 납니다.
+            손을 <span className="text-glow-400">기본 자리(A S D F …)</span>에 그대로 얹으면
+            흰건반, 그 윗줄 <span className="text-glow-400">W E T Y U O P</span>가
+            검은건반입니다. 실제 피아노처럼 검은건반이 흰건반 사이 위쪽에 놓여 있어요. 손이 자판
+            위를 돌아다닐 일이 없습니다. 화면의 건반을 마우스로 눌러도 소리가 납니다.
           </>
         ) : (
           <>
@@ -132,10 +133,11 @@ export function HelpPanel({ mode }: { mode: PlayMode }) {
           <p className="mt-1 text-xs leading-relaxed text-white/55">
             {keyboardMode ? (
               <>
-                <b className="text-white/80">자동 반주</b>를 켜고{' '}
-                <b className="text-white/80">←→</b>로 코드만 바꾸면, 오른손은 멜로디에만 집중할
-                수 있습니다. 흰건반에 찍힌 점이 지금 조성의 음이라 그 점만 밟아도 곡이 됩니다.
-                지속되는 소리가 필요하면 <b className="text-white/80">신디</b>로 바꿔 보세요.
+                <b className="text-white/80">자동 반주</b>를 켜고 왼손으로{' '}
+                <b className="text-white/80">1~7</b>만 눌러 코드를 바꾸면, 오른손은 멜로디에만
+                집중할 수 있습니다. 흰건반에 찍힌 점이 지금 조성의 음이라 그 점만 밟아도 곡이
+                됩니다. 지속되는 소리가 필요하면 <b className="text-white/80">신디</b>로 바꿔
+                보세요.
               </>
             ) : (
               <>
