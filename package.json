@@ -4,16 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "setup:vision": "node scripts/setup-vision.mjs",
-    "predev": "npm run setup:vision",
     "dev": "vite",
-    "prebuild": "npm run setup:vision",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^0.10.22",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

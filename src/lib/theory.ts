@@ -147,17 +147,30 @@ export function scaleNotes(key: KeyDef, fromMidi: number, count: number): number
 }
 
 /**
- * The pentatonic subset of `key`. Melody notes snapped to these can't clash with
- * the underlying chord, which is what makes free-hand melody playable.
+ * MIDI note for scale `degree` of `key`, counting 0 as the tonic. Degrees run
+ * past 7 into the octaves above, so degree 7 is the tonic an octave up.
  */
-export function pentatonicNotes(key: KeyDef, fromMidi: number, count: number): number[] {
-  const steps = [0, 2, 4, 7, 9]
-  const notes: number[] = []
-  for (let i = 0; i < count; i += 1) {
-    const octave = Math.floor(i / steps.length)
-    notes.push(fromMidi + key.tonic + steps[i % steps.length] + octave * 12)
-  }
-  return notes
+export function degreeToMidi(key: KeyDef, fromMidi: number, degree: number): number {
+  const octave = Math.floor(degree / MAJOR_SCALE.length)
+  const step = ((degree % MAJOR_SCALE.length) + MAJOR_SCALE.length) % MAJOR_SCALE.length
+  return fromMidi + key.tonic + MAJOR_SCALE[step] + octave * 12
+}
+
+/** Movable-do solfège name for a scale degree. */
+const SOLFA = ['도', '레', '미', '파', '솔', '라', '시']
+
+export function solfaForDegree(degree: number): string {
+  const octave = Math.floor(degree / SOLFA.length)
+  const name = SOLFA[((degree % SOLFA.length) + SOLFA.length) % SOLFA.length]
+  // A prime mark per octave above the starting one, as in Korean sheet music.
+  return name + '′'.repeat(Math.max(0, octave))
+}
+
+/** Solfège for a concert pitch, given the key it is being read in. */
+export function solfaForMidi(key: KeyDef, midi: number): string | null {
+  const offset = (((midi - key.tonic) % 12) + 12) % 12
+  const degree = MAJOR_SCALE.indexOf(offset)
+  return degree < 0 ? null : SOLFA[degree]
 }
 
 export interface Voicing {

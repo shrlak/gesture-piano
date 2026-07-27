@@ -5,75 +5,144 @@
 // jamo — "ㅋ" instead of "z" — which would break the whole layout. `.code` is
 // immune to both the IME and the keyboard layout.
 //
-// The layout sits entirely on the two alphabet rows under the resting hands:
-// the home row is the white keys, and the row above it holds the black keys,
-// physically above and between their neighbours exactly like a real piano.
-// Nothing reaches for the number row, so the hands never leave home position.
+// There are two layouts, and the difference is what makes this playable for
+// someone who is not a pianist:
+//
+//   easy      every key is a note of the chosen key. No accidentals exist, so
+//             no keypress can sound wrong. The same fingering plays the same
+//             tune in all twelve keys.
+//   chromatic a literal piano: home row is the white keys, the row above holds
+//             the black keys, sitting between their neighbours as on a piano.
+
+export type Layout = 'easy' | 'chromatic'
+
+/** Home row, left to right — the row the hands already rest on. */
+const HOME_ROW = [
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'KeyF',
+  'KeyG',
+  'KeyH',
+  'KeyJ',
+  'KeyK',
+  'KeyL',
+  'Semicolon',
+] as const
+
+/** The row above it. */
+const TOP_ROW = [
+  'KeyQ',
+  'KeyW',
+  'KeyE',
+  'KeyR',
+  'KeyT',
+  'KeyY',
+  'KeyU',
+  'KeyI',
+  'KeyO',
+  'KeyP',
+] as const
+
+const KEY_LABELS: Record<string, string> = {
+  KeyA: 'A',
+  KeyS: 'S',
+  KeyD: 'D',
+  KeyF: 'F',
+  KeyG: 'G',
+  KeyH: 'H',
+  KeyJ: 'J',
+  KeyK: 'K',
+  KeyL: 'L',
+  Semicolon: ';',
+  KeyQ: 'Q',
+  KeyW: 'W',
+  KeyE: 'E',
+  KeyR: 'R',
+  KeyT: 'T',
+  KeyY: 'Y',
+  KeyU: 'U',
+  KeyI: 'I',
+  KeyO: 'O',
+  KeyP: 'P',
+}
+
+// ---------------------------------------------------------------------------
+// Easy layout: keys are scale degrees, not semitones.
+// ---------------------------------------------------------------------------
+
+/**
+ * Home row is degrees 0-9 (도 to the 미 an octave up); the top row is the same
+ * shape one octave higher, so both hands use identical fingering. Highest
+ * degree reachable is 16.
+ */
+export const EASY_TOP_OFFSET = 7
+export const EASY_MAX_DEGREE = EASY_TOP_OFFSET + TOP_ROW.length - 1
+
+const EASY_BY_CODE = new Map<string, number>()
+HOME_ROW.forEach((code, index) => EASY_BY_CODE.set(code, index))
+TOP_ROW.forEach((code, index) => EASY_BY_CODE.set(code, EASY_TOP_OFFSET + index))
+
+/** Scale degree for a key in the easy layout, or undefined. */
+export function degreeForCode(code: string): number | undefined {
+  return EASY_BY_CODE.get(code)
+}
+
+// ---------------------------------------------------------------------------
+// Chromatic layout: a real piano keyboard.
 //
 //   black:   W E     T Y U     O P
 //   white:  A S D F G H J K L ;
+// ---------------------------------------------------------------------------
 
-export interface KeyBinding {
-  /** KeyboardEvent.code */
-  code: string
-  /** Semitones above the base note. */
-  semitone: number
-  /** What is printed on the physical key, for on-screen labels. */
-  label: string
-}
-
-/** Home row: the white keys, C through E an octave and a half up. */
-const WHITE_ROW: KeyBinding[] = [
-  { code: 'KeyA', semitone: 0, label: 'A' }, // C
-  { code: 'KeyS', semitone: 2, label: 'S' }, // D
-  { code: 'KeyD', semitone: 4, label: 'D' }, // E
-  { code: 'KeyF', semitone: 5, label: 'F' }, // F
-  { code: 'KeyG', semitone: 7, label: 'G' }, // G
-  { code: 'KeyH', semitone: 9, label: 'H' }, // A
-  { code: 'KeyJ', semitone: 11, label: 'J' }, // B
-  { code: 'KeyK', semitone: 12, label: 'K' }, // C
-  { code: 'KeyL', semitone: 14, label: 'L' }, // D
-  { code: 'Semicolon', semitone: 16, label: ';' }, // E
-]
+/** Semitones above the base note for each white key, in home-row order. */
+const WHITE_SEMITONES = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16]
 
 /**
- * Top row: the black keys. Q, R and I are deliberately unbound — they sit above
- * E–F and B–C, where a piano has no black key either.
+ * Black keys, paired with the top-row key that sits above them. `null` marks
+ * E–F and B–C, where a piano has no black key either, leaving Q, R and I free.
  */
-const BLACK_ROW: KeyBinding[] = [
-  { code: 'KeyW', semitone: 1, label: 'W' }, // C#
-  { code: 'KeyE', semitone: 3, label: 'E' }, // D#
-  { code: 'KeyT', semitone: 6, label: 'T' }, // F#
-  { code: 'KeyY', semitone: 8, label: 'Y' }, // G#
-  { code: 'KeyU', semitone: 10, label: 'U' }, // A#
-  { code: 'KeyO', semitone: 13, label: 'O' }, // C#
-  { code: 'KeyP', semitone: 15, label: 'P' }, // D#
-]
+const BLACK_SEMITONES: Array<number | null> = [null, 1, 3, null, 6, 8, 10, null, 13, 15]
 
-export const KEY_BINDINGS: KeyBinding[] = [...WHITE_ROW, ...BLACK_ROW]
-
-/** Total span of the on-screen keyboard, in semitones above the base note. */
+/** Total span of the chromatic keyboard, in semitones above the base note. */
 export const KEYBOARD_SPAN = 16
 
-const BY_CODE = new Map(KEY_BINDINGS.map((binding) => [binding.code, binding.semitone]))
+const CHROMATIC_BY_CODE = new Map<string, number>()
+HOME_ROW.forEach((code, index) => CHROMATIC_BY_CODE.set(code, WHITE_SEMITONES[index]))
+TOP_ROW.forEach((code, index) => {
+  const semitone = BLACK_SEMITONES[index]
+  if (semitone !== null) CHROMATIC_BY_CODE.set(code, semitone)
+})
 
+/** Semitone offset for a key in the chromatic layout, or undefined. */
 export function semitoneForCode(code: string): number | undefined {
-  return BY_CODE.get(code)
+  return CHROMATIC_BY_CODE.get(code)
 }
 
-/**
- * Labels shown on each on-screen key. Notes reachable from both rows list both
- * keys, since either one works and players use whichever hand is free.
- */
-const LABELS_BY_SEMITONE = new Map<number, string[]>()
-for (const binding of KEY_BINDINGS) {
-  const existing = LABELS_BY_SEMITONE.get(binding.semitone)
-  if (existing) existing.push(binding.label)
-  else LABELS_BY_SEMITONE.set(binding.semitone, [binding.label])
+// ---------------------------------------------------------------------------
+// Labels for the on-screen keyboard
+// ---------------------------------------------------------------------------
+
+function buildLabels(source: Map<string, number>): Map<number, string[]> {
+  const labels = new Map<number, string[]>()
+  for (const [code, value] of source) {
+    const existing = labels.get(value)
+    if (existing) existing.push(KEY_LABELS[code])
+    else labels.set(value, [KEY_LABELS[code]])
+  }
+  return labels
+}
+
+const EASY_LABELS = buildLabels(EASY_BY_CODE)
+const CHROMATIC_LABELS = buildLabels(CHROMATIC_BY_CODE)
+
+/** Keys that play scale degree `degree`; a degree may sit on both rows. */
+export function labelsForDegree(degree: number): string[] {
+  return EASY_LABELS.get(degree) ?? []
 }
 
 export function labelsForSemitone(semitone: number): string[] {
-  return LABELS_BY_SEMITONE.get(semitone) ?? []
+  return CHROMATIC_LABELS.get(semitone) ?? []
 }
 
 /** Pitch classes that are black keys on a piano. */
@@ -83,15 +152,17 @@ export function isBlackKey(midi: number): boolean {
   return BLACK_PITCH_CLASSES.has(((midi % 12) + 12) % 12)
 }
 
+// ---------------------------------------------------------------------------
+// Everything that is not a note
+// ---------------------------------------------------------------------------
+
 /**
- * Transport and performance keys. None of these collide with the piano layout:
- * the octave keys sit on the row *below* the keyboard, where the left hand can
- * reach them without leaving home position, and the chord keys take the number
- * row that the two-row layout no longer needs.
+ * Transport and performance keys. None collide with either layout: the octave
+ * keys sit on the row below the notes, where the left hand reaches them without
+ * leaving home position, and chords take the number row.
  */
 export const CONTROL_KEYS = {
   sustain: 'Space',
-  /** Dedicated octave keys, one row below the white keys. */
   octaveDown: 'KeyZ',
   octaveUp: 'KeyX',
   strikeChord: 'Enter',

@@ -1,15 +1,13 @@
 import type { ReactNode } from 'react'
-import { KEYS, PROGRESSIONS, noteName, type ChordColor } from '../lib/theory'
+import { KEYS, PROGRESSIONS, degreeToMidi, noteName, type ChordColor } from '../lib/theory'
 import { PATTERNS } from '../lib/patterns'
 import type { Instrument } from '../lib/audio'
-
-/** How the player drives the app: camera gestures, or the computer keyboard. */
-export type PlayMode = 'gesture' | 'keyboard'
+import type { Layout } from '../lib/keymap'
 
 export interface Settings {
-  mode: PlayMode
+  layout: Layout
   instrument: Instrument
-  /** MIDI note of the leftmost computer-keyboard key. */
+  /** MIDI note the leftmost key plays (the tonic, in the easy layout). */
   baseMidi: number
   keyIndex: number
   color: ChordColor
@@ -22,8 +20,6 @@ export interface Settings {
   volume: number
   reverb: number
   padLevel: number
-  mirror: boolean
-  split: number
 }
 
 interface Props {
@@ -140,9 +136,9 @@ function Toggle({
   )
 }
 
-const MODE_OPTIONS: Array<{ value: PlayMode; label: string; hint: string }> = [
-  { value: 'gesture', label: '제스처', hint: '카메라 · 손동작' },
-  { value: 'keyboard', label: '건반', hint: '컴퓨터 키보드' },
+const LAYOUT_OPTIONS: Array<{ value: Layout; label: string; hint: string }> = [
+  { value: 'easy', label: '쉬운 건반', hint: '틀린 음 없음' },
+  { value: 'chromatic', label: '피아노 건반', hint: '반음까지 전부' },
 ]
 
 const INSTRUMENT_OPTIONS: Array<{ value: Instrument; label: string; hint: string }> = [
@@ -160,20 +156,29 @@ const COLOR_OPTIONS: Array<{ value: ChordColor; label: string; hint: string }> =
 export function ControlPanel({ settings, onChange }: Props) {
   const meter = PATTERNS.find((pattern) => pattern.id === settings.patternId)?.beatsPerBar ?? 4
 
+  // The easy layout starts on the tonic, so show the note the leftmost key
+  // really plays instead of the internal reference pitch.
+  const musicalKey = KEYS[settings.keyIndex]
+  const lowestMidi =
+    settings.layout === 'easy'
+      ? degreeToMidi(musicalKey, settings.baseMidi, 0)
+      : settings.baseMidi
+  const lowestLabel = `${noteName(lowestMidi % 12, musicalKey.useFlats)}${Math.floor(lowestMidi / 12) - 1}`
+
   return (
     <div className="space-y-3">
       <Section title="연주 방식">
-        <Group label="입력">
+        <Group label="건반 배치">
           <div className="grid grid-cols-2 gap-1.5">
-            {MODE_OPTIONS.map((option) => (
+            {LAYOUT_OPTIONS.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                onClick={() => onChange('mode', option.value)}
+                onClick={() => onChange('layout', option.value)}
                 onPointerUp={blurOnPointerUp}
                 className={[
                   'rounded-xl border px-2 py-2.5 text-center transition',
-                  settings.mode === option.value
+                  settings.layout === option.value
                     ? 'border-glow-400 bg-glow-400/15 text-glow-400'
                     : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25',
                 ].join(' ')}
@@ -207,21 +212,16 @@ export function ControlPanel({ settings, onChange }: Props) {
           </div>
         </Group>
 
-        {settings.mode === 'keyboard' && (
-          <Field
-            label="건반 옥타브"
-            hint={`${noteName(settings.baseMidi % 12, false)}${Math.floor(settings.baseMidi / 12) - 1} 부터`}
-          >
-            <input
-              type="range"
-              min={24}
-              max={72}
-              step={12}
-              value={settings.baseMidi}
-              onChange={(event) => onChange('baseMidi', Number(event.target.value))}
-            />
-          </Field>
-        )}
+        <Field label="건반 높이 (옥타브)" hint={`${lowestLabel} 부터 · Z X`}>
+          <input
+            type="range"
+            min={36}
+            max={84}
+            step={12}
+            value={settings.baseMidi}
+            onChange={(event) => onChange('baseMidi', Number(event.target.value))}
+          />
+        </Field>
       </Section>
 
       <Section title="조성 · 화성">
@@ -352,24 +352,6 @@ export function ControlPanel({ settings, onChange }: Props) {
             max={100}
             value={Math.round(settings.padLevel * 100)}
             onChange={(event) => onChange('padLevel', Number(event.target.value) / 100)}
-          />
-        </Field>
-      </Section>
-
-      <Section title="화면 · 인식">
-        <Toggle
-          label="좌우 반전 (거울 모드)"
-          description="켜두면 손을 움직인 방향 그대로 화면이 움직입니다"
-          checked={settings.mirror}
-          onChange={(value) => onChange('mirror', value)}
-        />
-        <Field label="코드 영역 넓이" hint={`${Math.round(settings.split * 100)}%`}>
-          <input
-            type="range"
-            min={35}
-            max={85}
-            value={Math.round(settings.split * 100)}
-            onChange={(event) => onChange('split', Number(event.target.value) / 100)}
           />
         </Field>
       </Section>

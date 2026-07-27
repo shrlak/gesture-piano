@@ -516,7 +516,7 @@ export class AudioEngine {
     this.sustaining.delete(id)
   }
 
-  /** Silence everything now — the "fist to stop" gesture lands here. */
+  /** Silence everything now — the panic key and the stop button land here. */
   panic() {
     for (const voice of this.active) voice.kill()
     for (const voice of this.sustaining.values()) voice.kill()

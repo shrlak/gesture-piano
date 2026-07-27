@@ -1,8 +1,8 @@
 // Accompaniment patterns (반주 패턴) and the clock that plays them.
 //
-// The hand picks the chord; the pattern decides *how* that chord is played.
-// That split is what makes gesture accompaniment usable — you are conducting
-// harmony, not trying to hit individual keys in mid-air.
+// The player picks the chord; the pattern decides *how* that chord is played.
+// That split is what lets someone who cannot play piano still accompany: one
+// keypress per chord change, and the pattern does the rest in time.
 
 import type { AudioEngine } from './audio'
 import type { Voicing } from './theory'

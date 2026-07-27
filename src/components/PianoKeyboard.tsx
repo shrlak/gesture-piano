@@ -1,14 +1,16 @@
-import { useCallback, useRef } from 'react'
 import { KEYBOARD_SPAN, isBlackKey, labelsForSemitone } from '../lib/keymap'
-import { noteName } from '../lib/theory'
+import { noteName, solfaForMidi, type KeyDef } from '../lib/theory'
+import { useKeyPointer } from './useKeyPointer'
 
 interface Props {
+  musicalKey: KeyDef
   /** MIDI note the leftmost key plays. */
   baseMidi: number
   activeNotes: Set<number>
   /** Pitch classes of the current key, marked so players stay in key. */
   scalePitchClasses: Set<number>
-  useFlats: boolean
+  /** Pitch classes of the chord sounding right now, highlighted as safe notes. */
+  chordPitchClasses: Set<number>
   onNoteDown: (midi: number) => void
   onNoteUp: (midi: number) => void
 }
@@ -34,57 +36,20 @@ function buildKeys(baseMidi: number): { keys: KeyModel[]; whiteCount: number } {
   return { keys, whiteCount: whitesBefore }
 }
 
+/** The full chromatic keyboard, for players who want the accidentals. */
 export function PianoKeyboard({
+  musicalKey,
   baseMidi,
   activeNotes,
   scalePitchClasses,
-  useFlats,
+  chordPitchClasses,
   onNoteDown,
   onNoteUp,
 }: Props) {
   const { keys, whiteCount } = buildKeys(baseMidi)
   const whiteWidth = 100 / whiteCount
   const blackWidth = whiteWidth * 0.62
-
-  // Which note this pointer is currently sounding, so dragging across the
-  // keyboard glides instead of piling up stuck notes.
-  const pointerNote = useRef(new Map<number, number>())
-
-  const press = useCallback(
-    (pointerId: number, midi: number) => {
-      const previous = pointerNote.current.get(pointerId)
-      if (previous === midi) return
-      if (previous !== undefined) onNoteUp(previous)
-      pointerNote.current.set(pointerId, midi)
-      onNoteDown(midi)
-    },
-    [onNoteDown, onNoteUp],
-  )
-
-  const lift = useCallback(
-    (pointerId: number) => {
-      const previous = pointerNote.current.get(pointerId)
-      if (previous === undefined) return
-      pointerNote.current.delete(pointerId)
-      onNoteUp(previous)
-    },
-    [onNoteUp],
-  )
-
-  const keyHandlers = (midi: number) => ({
-    onPointerDown: (event: React.PointerEvent) => {
-      event.preventDefault()
-      press(event.pointerId, midi)
-    },
-    onPointerEnter: (event: React.PointerEvent) => {
-      if (event.buttons === 1) press(event.pointerId, midi)
-    },
-    onPointerUp: (event: React.PointerEvent) => lift(event.pointerId),
-    onPointerCancel: (event: React.PointerEvent) => lift(event.pointerId),
-    onPointerLeave: (event: React.PointerEvent) => {
-      if (event.buttons === 1) lift(event.pointerId)
-    },
-  })
+  const { keyHandlers } = useKeyPointer(onNoteDown, onNoteUp)
 
   const whites = keys.filter((key) => !key.black)
   const blacks = keys.filter((key) => key.black)
@@ -96,29 +61,29 @@ export function PianoKeyboard({
         <div className="flex h-full w-full gap-[2px]">
           {whites.map((key) => {
             const active = activeNotes.has(key.midi)
-            const inScale = scalePitchClasses.has(((key.midi % 12) + 12) % 12)
-            const isC = key.midi % 12 === 0
+            const pitchClass = ((key.midi % 12) + 12) % 12
+            const inChord = chordPitchClasses.has(pitchClass)
+            const inScale = scalePitchClasses.has(pitchClass)
+            const solfa = solfaForMidi(musicalKey, key.midi)
             return (
               <div
                 key={key.midi}
                 {...keyHandlers(key.midi)}
                 className={[
-                  'relative flex flex-1 cursor-pointer flex-col items-center justify-end rounded-b-lg pb-2 transition-colors duration-75',
+                  'relative flex flex-1 cursor-pointer flex-col items-center justify-end gap-0.5 rounded-b-lg pb-2 transition-colors duration-75',
                   active
                     ? 'bg-glow-400 text-sanctuary-950'
-                    : inScale
-                      ? 'bg-white text-sanctuary-900 hover:bg-glow-400/40'
-                      : 'bg-white/70 text-sanctuary-900/60 hover:bg-white/85',
+                    : inChord
+                      ? 'bg-mint-400/85 text-sanctuary-950 hover:bg-mint-400'
+                      : inScale
+                        ? 'bg-white text-sanctuary-900 hover:bg-white/80'
+                        : 'bg-white/55 text-sanctuary-900/50 hover:bg-white/70',
                 ].join(' ')}
               >
-                {/* In-key notes get a dot, so worship players can stay diatonic. */}
-                {inScale && !active && (
-                  <span className="absolute top-2 h-1.5 w-1.5 rounded-full bg-glow-500/60" />
-                )}
+                <span className="text-sm font-bold">{solfa ?? ''}</span>
                 <span className="text-[0.6rem] font-semibold opacity-45">
-                  {isC
-                    ? `${noteName(key.midi % 12, useFlats)}${Math.floor(key.midi / 12) - 1}`
-                    : ''}
+                  {noteName(pitchClass, musicalKey.useFlats)}
+                  {Math.floor(key.midi / 12) - 1}
                 </span>
                 <span className="text-[0.7rem] font-bold tabular-nums sm:text-xs">
                   {key.labels[0] ?? ''}
@@ -131,7 +96,9 @@ export function PianoKeyboard({
         <div className="pointer-events-none absolute inset-0">
           {blacks.map((key) => {
             const active = activeNotes.has(key.midi)
-            const inScale = scalePitchClasses.has(((key.midi % 12) + 12) % 12)
+            const pitchClass = ((key.midi % 12) + 12) % 12
+            const inChord = chordPitchClasses.has(pitchClass)
+            const inScale = scalePitchClasses.has(pitchClass)
             return (
               <div
                 key={key.midi}
@@ -144,9 +111,11 @@ export function PianoKeyboard({
                   'pointer-events-auto absolute top-0 flex h-[62%] cursor-pointer flex-col items-center justify-end rounded-b-lg pb-1.5 transition-colors duration-75',
                   active
                     ? 'bg-glow-500 text-sanctuary-950'
-                    : inScale
-                      ? 'bg-sanctuary-700 text-white/70 hover:bg-sanctuary-600'
-                      : 'bg-sanctuary-900 text-white/40 hover:bg-sanctuary-800',
+                    : inChord
+                      ? 'bg-mint-500 text-sanctuary-950 hover:bg-mint-400'
+                      : inScale
+                        ? 'bg-sanctuary-700 text-white/70 hover:bg-sanctuary-600'
+                        : 'bg-sanctuary-900 text-white/40 hover:bg-sanctuary-800',
                 ].join(' ')}
               >
                 <span className="text-[0.65rem] font-bold tabular-nums">
