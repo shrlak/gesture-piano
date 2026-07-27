@@ -4,9 +4,11 @@ import { HandFilter, readHand, type SmoothedHand } from '../lib/gestures'
 
 export type TrackingStatus = 'idle' | 'loading' | 'running' | 'error'
 
-const LOCAL_WASM = '/mediapipe/wasm'
+// Resolved against the deploy base rather than the domain root, so the
+// self-hosted assets keep working if the app is ever served from a subpath.
+const LOCAL_WASM = `${import.meta.env.BASE_URL}mediapipe/wasm`
 const CDN_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm'
-const LOCAL_MODEL = '/models/hand_landmarker.task'
+const LOCAL_MODEL = `${import.meta.env.BASE_URL}models/hand_landmarker.task`
 const CDN_MODEL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
 

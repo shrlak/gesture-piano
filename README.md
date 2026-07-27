@@ -67,10 +67,22 @@ npm run build    # dist/ 생성
 npm run preview
 ```
 
-## 배포
+## 배포 (Vercel)
 
-Vercel에 그대로 올라갑니다 (프레임워크 자동 감지: Vite, 빌드 `npm run build`,
-출력 `dist`). 카메라 접근은 브라우저 정책상 **HTTPS 또는 localhost**에서만 동작합니다.
+저장소를 Vercel에 연결하면 추가 설정 없이 배포됩니다. 프레임워크가 Vite로 자동
+감지되어 빌드는 `npm run build`, 출력은 `dist`입니다. 프로덕션 브랜치에 push할
+때마다 자동으로 다시 배포됩니다.
+
+빌드 중에 `prebuild` 훅이 손 인식 모델(약 7.5 MB)을 내려받아 `dist/models/`로
+함께 올립니다. 즉 **모델과 WASM 런타임을 같은 도메인에서 자가 호스팅**하므로
+외부 CDN에 의존하지 않습니다. 빌드 환경에서 내려받기가 막히면 앱이 실행 시점에
+공개 CDN으로 자동 폴백하므로 배포가 실패하지는 않습니다.
+
+`vercel.json`은 해시가 붙지 않는 `models/`·`mediapipe/` 정적 파일(합계 약 19 MB)에
+30일 캐시 헤더를 지정합니다. 이게 없으면 방문할 때마다 재검증 요청이 나갑니다.
+
+카메라 접근은 브라우저 정책상 **HTTPS 또는 localhost**에서만 동작합니다.
+Vercel 배포 URL은 HTTPS라 그대로 됩니다.
 
 ## 참고
 
