@@ -105,6 +105,13 @@ export function HelpPanel({ layout }: { layout: Layout }) {
           코드를 짚는 것도 버거우면 <b className="text-white/60">코드 진행 가이드</b>에서 곡의
           진행을 고르고 <b className="text-white/60">진행 자동 넘김</b>을 켜세요. 코드가
           마디마다 알아서 넘어가고, 멜로디만 치면 됩니다.
+          {!easy && (
+            <>
+              {' '}
+              검은건반까지 신경 쓰기 어렵다면 <b className="text-white/60">쉬운 건반</b>으로
+              바꾸면 조에 맞는 음만 남습니다.
+            </>
+          )}
         </p>
       </div>
     </details>

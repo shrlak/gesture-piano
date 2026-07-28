@@ -25,7 +25,7 @@ import { ControlPanel, type Settings } from './components/ControlPanel'
 import { HelpPanel } from './components/HelpPanel'
 
 const DEFAULT_SETTINGS: Settings = {
-  layout: 'easy',
+  layout: 'chromatic', // the real white/black piano keyboard
   instrument: 'piano',
   baseMidi: 60, // C4 — middle C, with the melody range sitting above it
   keyIndex: 7, // G — the key most Korean worship sets land in
@@ -476,8 +476,9 @@ export default function App() {
             키보드로 치는 <span className="text-glow-400">찬양 반주</span>
           </h1>
           <p className="mt-1.5 max-w-xl text-sm text-white/50">
-            컴퓨터 키보드가 그대로 건반이 됩니다. 조를 정하면 모든 건반이 그 조의 음이 되어 틀린
-            음이 나오지 않고, 반주는 박자에 맞춰 알아서 흐릅니다.
+            {settings.layout === 'chromatic'
+              ? '컴퓨터 키보드가 그대로 피아노 건반이 됩니다. 지금 코드에 어울리는 음은 초록색으로 켜지고, 반주는 박자에 맞춰 알아서 흐릅니다.'
+              : '모든 건반이 지금 조의 음이라 틀린 음이 나오지 않습니다. 초록색 건반은 지금 코드에 어울리는 음이고, 반주는 박자에 맞춰 알아서 흐릅니다.'}
           </p>
         </div>
 

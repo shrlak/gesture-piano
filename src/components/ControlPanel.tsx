@@ -137,8 +137,8 @@ function Toggle({
 }
 
 const LAYOUT_OPTIONS: Array<{ value: Layout; label: string; hint: string }> = [
+  { value: 'chromatic', label: '피아노 건반', hint: '흰건반 · 검은건반' },
   { value: 'easy', label: '쉬운 건반', hint: '틀린 음 없음' },
-  { value: 'chromatic', label: '피아노 건반', hint: '반음까지 전부' },
 ]
 
 const INSTRUMENT_OPTIONS: Array<{ value: Instrument; label: string; hint: string }> = [
