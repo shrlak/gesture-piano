@@ -11,6 +11,7 @@ const PIANO_KEYS: Array<[string, string]> = [
 ]
 
 const CONTROLS: Array<[string, string]> = [
+  ['Shift + 건반', '세게 치기 (크고 거칠게)'],
   ['X / Z', '옥타브 올리기 / 내리기'],
   ['1 ~ 7', '코드 바꾸기 (누르면 코드도 울립니다)'],
   ['Space', '서스테인 페달 (누르고 있는 동안)'],
@@ -81,6 +82,22 @@ export function HelpPanel({ layout }: { layout: Layout }) {
         <div className="space-y-2">
           <Heading>그 밖의 키</Heading>
           <KeyTable rows={CONTROLS} />
+        </div>
+
+        <div className="space-y-2">
+          <Heading>세기 (다이내믹)</Heading>
+          <p className="text-xs leading-relaxed text-white/50">
+            컴퓨터 자판은 얼마나 세게 눌렀는지를 알려주지 않기 때문에, 이 신디는 다른 데서
+            세기를 읽습니다. <b className="text-white/80">빠르게 몰아칠수록 세게</b>, 천천히
+            놓을수록 여리게 울리고, <b className="text-white/80">Shift</b>를 같이 누르면 그 음만
+            강하게 찍힙니다. 화면 건반은 <b className="text-white/80">아래쪽</b>을 누를수록
+            세고, 터치나 펜은 실제 누르는 압력을 그대로 씁니다.
+          </p>
+          <p className="text-xs leading-relaxed text-white/40">
+            세게 칠수록 소리는 커지고, 밝아지고, 거칠어집니다(디스토션). 반응 폭은{' '}
+            <b className="text-white/60">세게 칠수록 반응</b>과{' '}
+            <b className="text-white/60">디스토션</b> 슬라이더로 조절합니다.
+          </p>
         </div>
 
         <div className="rounded-xl border border-mint-400/25 bg-mint-400/8 p-3">

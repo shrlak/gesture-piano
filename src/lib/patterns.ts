@@ -277,7 +277,7 @@ export class Sequencer {
           voicing.notes.forEach((note, index) => {
             // Roll the notes a few milliseconds apart so blocks sound played,
             // not triggered.
-            this.engine.playPiano(note, {
+            this.engine.playStab(note, {
               velocity: velocity * (index === 0 ? 1 : 0.85),
               hold: length,
               when: at + index * 0.008,
@@ -285,7 +285,7 @@ export class Sequencer {
           })
           break
         case 'arp':
-          this.engine.playPiano(arpNote(voicing, event.step ?? 0), {
+          this.engine.playStab(arpNote(voicing, event.step ?? 0), {
             velocity,
             hold: length,
             when: at,
