@@ -9,7 +9,9 @@ interface Props {
   activeNotes: Set<number>
   /** Pitch classes of the chord sounding right now, highlighted as safe notes. */
   chordPitchClasses: Set<number>
-  onNoteDown: (midi: number) => void
+  /** How far apart a soft and a hard press should sound. */
+  sensitivity: number
+  onNoteDown: (midi: number, velocity: number) => void
   onNoteUp: (midi: number) => void
 }
 
@@ -23,10 +25,11 @@ export function ScaleKeyboard({
   baseMidi,
   activeNotes,
   chordPitchClasses,
+  sensitivity,
   onNoteDown,
   onNoteUp,
 }: Props) {
-  const { keyHandlers } = useKeyPointer(onNoteDown, onNoteUp)
+  const { keyHandlers } = useKeyPointer(onNoteDown, onNoteUp, sensitivity)
 
   const degrees = Array.from({ length: EASY_MAX_DEGREE + 1 }, (_, degree) => degree)
 

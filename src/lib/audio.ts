@@ -1,16 +1,23 @@
-// A small Web Audio instrument rack: piano, pad, bass, and a click.
+// The synth rack. Everything you hear is generated here — there is no sampler
+// and no piano voice anywhere in the app.
 //
-// Everything is synthesised, so there are no samples to download and the app
-// stays responsive on a phone. The piano voice is additive (fundamental plus a
-// few stretched partials) with a percussive hammer transient, which lands close
-// enough to an upright piano for accompaniment work.
+// One subtractive engine covers every part: the preset chosen in `synths.ts`
+// shapes the note you play, and the accompaniment reuses the same oscillator
+// stack with a shorter envelope so the whole arrangement sounds like one
+// instrument rather than a keyboard playing over a piano.
+//
+// Dynamics run through three places at once. A harder strike is
+//   louder      (amp envelope peak),
+//   brighter    (filter envelope peak), and
+//   dirtier     (waveshaper drive),
+// which together read as "pressed harder" far more convincingly than volume
+// on its own.
 
 import { midiToFrequency } from './theory'
+import { DEFAULT_PRESET_ID, findPreset, type SynthPreset, type SynthPresetId } from './synths'
 
-export type VoiceName = 'piano' | 'pad' | 'bass' | 'bell' | 'synth'
-
-/** What the player's own keys sound like, independent of the accompaniment. */
-export type Instrument = 'piano' | 'synth'
+/** Mixer busses. Each is a synth voice; none of them is a sampled instrument. */
+export type VoiceName = 'lead' | 'keys' | 'pad' | 'bass' | 'click'
 
 export interface ActiveVoice {
   /** Stop the voice, letting it release naturally. */
@@ -18,6 +25,10 @@ export interface ActiveVoice {
   /** Cut the voice off immediately, used when the engine is muted. */
   kill: () => void
   endsAt: number
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }
 
 /** Generates a decaying-noise impulse response for the reverb send. */
@@ -37,6 +48,32 @@ function buildImpulse(context: AudioContext, seconds: number, decay: number): Au
   return impulse
 }
 
+/**
+ * Soft-clipping curve for the drive stage. Curves are expensive enough to build
+ * that they are cached per rounded amount — a fast run of notes would otherwise
+ * allocate a table per keypress.
+ */
+// `WaveShaperNode.curve` insists on a plain (non-shared) buffer, hence the
+// explicit type argument.
+const CURVE_CACHE = new Map<number, Float32Array<ArrayBuffer>>()
+
+function driveCurve(amount: number): Float32Array<ArrayBuffer> {
+  const quantised = Math.round(clamp(amount, 0, 1) * 24) / 24
+  const cached = CURVE_CACHE.get(quantised)
+  if (cached) return cached
+
+  const samples = 1024
+  const curve = new Float32Array(samples)
+  // Classic soft clipper: gentle rounding at low k, hard edges as it climbs.
+  const k = quantised * 60
+  for (let i = 0; i < samples; i += 1) {
+    const x = (i * 2) / samples - 1
+    curve[i] = ((1 + k) * x) / (1 + k * Math.abs(x))
+  }
+  CURVE_CACHE.set(quantised, curve)
+  return curve
+}
+
 export class AudioEngine {
   private context: AudioContext | null = null
   private master: GainNode | null = null
@@ -44,6 +81,10 @@ export class AudioEngine {
   private busses = new Map<VoiceName, GainNode>()
   private active = new Set<ActiveVoice>()
   private sustaining = new Map<string, ActiveVoice>()
+
+  private preset: SynthPreset = findPreset(DEFAULT_PRESET_ID)
+  /** Player-dialled grit, multiplying whatever the preset already has. */
+  private driveAmount = 0.35
 
   get ready(): boolean {
     return this.context !== null
@@ -75,6 +116,11 @@ export class AudioEngine {
     compressor.attack.value = 0.006
     compressor.release.value = 0.25
 
+    // Safety net after the compressor: hard strikes on a driven preset can
+    // still overshoot, and a rounded edge is far kinder than digital clipping.
+    const limiter = context.createWaveShaper()
+    limiter.curve = driveCurve(0.12)
+
     const convolver = context.createConvolver()
     convolver.buffer = buildImpulse(context, 2.8, 2.4)
 
@@ -91,17 +137,18 @@ export class AudioEngine {
     convolver.connect(reverbReturn)
     reverbReturn.connect(master)
     master.connect(compressor)
-    compressor.connect(context.destination)
+    compressor.connect(limiter)
+    limiter.connect(context.destination)
 
     this.master = master
     this.reverbSend = reverbSend
 
     const levels: Record<VoiceName, number> = {
-      piano: 0.9,
+      lead: 0.85,
+      keys: 0.6,
       pad: 0.5,
       bass: 0.75,
-      bell: 0.6,
-      synth: 0.55,
+      click: 0.6,
     }
     for (const [name, level] of Object.entries(levels) as [VoiceName, number][]) {
       const bus = context.createGain()
@@ -130,6 +177,19 @@ export class AudioEngine {
     bus.gain.setTargetAtTime(value, this.context.currentTime, 0.05)
   }
 
+  /** Notes already sounding keep their character; the next one changes. */
+  setPreset(id: SynthPresetId) {
+    this.preset = findPreset(id)
+  }
+
+  get presetId(): SynthPresetId {
+    return this.preset.id
+  }
+
+  setDrive(amount: number) {
+    this.driveAmount = clamp(amount, 0, 1)
+  }
+
   private bus(voice: VoiceName): GainNode | null {
     return this.busses.get(voice) ?? null
   }
@@ -143,91 +203,106 @@ export class AudioEngine {
   }
 
   /**
-   * Struck string voice. `hold` is how long the key stays down; the tail rings
-   * on past it the way a real piano does.
+   * Overdrive stage. Louder into the shaper means more of the curve's bent
+   * region gets used, so `amount` controls grit while the post gain keeps the
+   * level from running away with it.
    */
-  playPiano(
-    midi: number,
-    options: {
-      velocity?: number
-      hold?: number
-      when?: number
-      voice?: VoiceName
-    } = {},
-  ): ActiveVoice | null {
-    const context = this.context
-    const bus = this.bus(options.voice ?? 'piano')
-    if (!context || !bus) return null
+  private buildDrive(
+    context: AudioContext,
+    amount: number,
+  ): { input: GainNode; output: GainNode } {
+    const level = clamp(amount, 0, 1)
+    const input = context.createGain()
+    input.gain.value = 1 + level * 7
 
-    const velocity = Math.min(1, Math.max(0.05, options.velocity ?? 0.7))
-    const when = options.when ?? context.currentTime
-    const hold = options.hold ?? 0.9
-    const frequency = midiToFrequency(midi)
+    const shaper = context.createWaveShaper()
+    shaper.curve = driveCurve(level)
+    shaper.oversample = '2x'
 
-    // Higher notes decay faster, exactly like real strings.
-    const decay = Math.max(0.5, 5.5 * Math.pow(0.5, (midi - 48) / 26))
+    const output = context.createGain()
+    // Compensate most, but not all, of the gain the clipper adds: a dirty note
+    // should still arrive a little hotter than a clean one.
+    output.gain.value = 1 / (1 + level * 2.6)
 
-    const amp = context.createGain()
-    amp.gain.value = 0
-    amp.connect(bus)
+    input.connect(shaper)
+    shaper.connect(output)
+    return { input, output }
+  }
 
-    const tone = context.createBiquadFilter()
-    tone.type = 'lowpass'
-    // Playing harder opens the tone up, which is most of what "dynamics" means.
-    tone.frequency.value = 1400 + velocity * 5200
-    tone.Q.value = 0.4
-    tone.connect(amp)
+  /**
+   * Builds the oscillator stack and filter shared by every preset voice, and
+   * returns the node its amplifier should hang off.
+   */
+  private buildTone(
+    context: AudioContext,
+    preset: SynthPreset,
+    frequency: number,
+    velocity: number,
+    when: number,
+    destination: AudioNode,
+  ): { oscillators: OscillatorNode[]; stop: (at: number) => void } {
+    const drive = clamp(
+      preset.drive.base + preset.drive.velocity * this.driveAmount * Math.pow(velocity, 2),
+      0,
+      1,
+    )
+    const { input: driveIn, output: driveOut } = this.buildDrive(context, drive)
+    driveOut.connect(destination)
 
-    const partials: Array<[number, number]> = [
-      [1, 1],
-      [2, 0.42],
-      [3, 0.18],
-      [4, 0.1],
-      [6, 0.04],
-    ]
+    const filter = context.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.Q.value = preset.filter.q
+    filter.connect(driveIn)
+
+    // Filter envelope. Playing harder opens it further, which is most of what
+    // "dynamics" means on a synth.
+    const shape = preset.filter
+    const peak = clamp(
+      shape.base + shape.velocity * Math.pow(velocity, 1.4) + frequency * shape.track,
+      120,
+      16000,
+    )
+    const settled = clamp(Math.max(frequency * 1.4, peak * shape.sustain), 120, 16000)
+    filter.frequency.setValueAtTime(
+      clamp(Math.max(frequency * 1.1, peak * 0.3), 60, 16000),
+      when,
+    )
+    filter.frequency.linearRampToValueAtTime(peak, when + shape.attack)
+    filter.frequency.exponentialRampToValueAtTime(settled, when + shape.attack + shape.decay)
+
     const oscillators: OscillatorNode[] = []
-    for (const [ratio, level] of partials) {
+    for (const layer of preset.layers) {
       const osc = context.createOscillator()
-      osc.type = 'sine'
-      // Slight stretch tuning: real piano partials run sharp of pure harmonics.
-      osc.frequency.value = frequency * ratio * (1 + 0.0004 * ratio * ratio)
-      const partialGain = context.createGain()
-      partialGain.gain.value = level * 0.25
-      osc.connect(partialGain)
-      partialGain.connect(tone)
+      osc.type = layer.type
+      osc.frequency.value = frequency * Math.pow(2, (layer.semitones ?? 0) / 12)
+      osc.detune.value = layer.detune
+      const gain = context.createGain()
+      gain.gain.value = layer.gain
+      osc.connect(gain)
+      gain.connect(filter)
       osc.start(when)
       oscillators.push(osc)
     }
 
-    // Hammer noise: a few milliseconds of filtered noise glued to the attack.
-    const noiseLength = Math.floor(context.sampleRate * 0.03)
-    const noiseBuffer = context.createBuffer(1, noiseLength, context.sampleRate)
-    const noiseData = noiseBuffer.getChannelData(0)
-    for (let i = 0; i < noiseLength; i += 1) {
-      noiseData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / noiseLength, 3)
+    // Vibrato fades in, the way a singer leans into a held note.
+    let lfo: OscillatorNode | null = null
+    if (preset.vibrato) {
+      lfo = context.createOscillator()
+      lfo.type = 'sine'
+      lfo.frequency.value = preset.vibrato.rate
+      const depth = context.createGain()
+      depth.gain.setValueAtTime(0, when)
+      depth.gain.setValueAtTime(0, when + preset.vibrato.delay)
+      depth.gain.linearRampToValueAtTime(
+        preset.vibrato.cents,
+        when + preset.vibrato.delay + 0.4,
+      )
+      lfo.connect(depth)
+      for (const osc of oscillators) depth.connect(osc.detune)
+      lfo.start(when)
     }
-    const noise = context.createBufferSource()
-    noise.buffer = noiseBuffer
-    const noiseGain = context.createGain()
-    noiseGain.gain.value = velocity * 0.09
-    const noiseFilter = context.createBiquadFilter()
-    noiseFilter.type = 'bandpass'
-    noiseFilter.frequency.value = frequency * 3
-    noiseFilter.Q.value = 0.8
-    noise.connect(noiseFilter)
-    noiseFilter.connect(noiseGain)
-    noiseGain.connect(amp)
-    noise.start(when)
 
-    const peak = velocity * 0.5
-    amp.gain.setValueAtTime(0.0001, when)
-    amp.gain.linearRampToValueAtTime(peak, when + 0.006)
-    amp.gain.exponentialRampToValueAtTime(peak * 0.32, when + 0.35)
-    const releaseStart = when + hold
-    amp.gain.setTargetAtTime(0.0001, releaseStart, decay / 6)
-
-    const endsAt = releaseStart + decay
-    const stopAll = (at: number) => {
+    const stop = (at: number) => {
       for (const osc of oscillators) {
         try {
           osc.stop(at)
@@ -236,25 +311,120 @@ export class AudioEngine {
         }
       }
       try {
-        noise.stop(at)
+        lfo?.stop(at)
       } catch {
         /* already stopped */
       }
     }
-    stopAll(endsAt + 0.1)
+
+    return { oscillators, stop }
+  }
+
+  /**
+   * The note the player holds down. It sustains for as long as the key is
+   * down — that is the whole point of a synth voice — and its loudness,
+   * brightness, and distortion all come from `velocity`.
+   */
+  playLead(
+    midi: number,
+    options: { velocity?: number; when?: number; voice?: VoiceName } = {},
+  ): ActiveVoice | null {
+    const context = this.context
+    const bus = this.bus(options.voice ?? 'lead')
+    if (!context || !bus) return null
+
+    const preset = this.preset
+    const velocity = clamp(options.velocity ?? 0.6, 0.05, 1)
+    const when = options.when ?? context.currentTime
+    const frequency = midiToFrequency(midi)
+
+    const amp = context.createGain()
+    amp.gain.value = 0
+    amp.connect(bus)
+
+    const { stop } = this.buildTone(context, preset, frequency, velocity, when, amp)
+
+    // Loudness rises faster than velocity so soft playing really does drop back.
+    const peak = preset.amp.level * Math.pow(velocity, 1.35)
+    amp.gain.setValueAtTime(0.0001, when)
+    amp.gain.linearRampToValueAtTime(peak, when + preset.amp.attack)
+    amp.gain.linearRampToValueAtTime(
+      peak * preset.amp.sustain,
+      when + preset.amp.attack + preset.amp.decay,
+    )
 
     const voice: ActiveVoice = {
-      endsAt,
+      endsAt: Number.POSITIVE_INFINITY,
       release: (at) => {
         amp.gain.cancelScheduledValues(at)
-        amp.gain.setTargetAtTime(0.0001, at, 0.18)
-        stopAll(at + 1.2)
+        amp.gain.setValueAtTime(Math.max(0.0001, amp.gain.value), at)
+        amp.gain.setTargetAtTime(0.0001, at, preset.amp.release / 3)
+        stop(at + preset.amp.release * 4 + 0.2)
+        this.active.delete(voice)
       },
       kill: () => {
         const now = context.currentTime
         amp.gain.cancelScheduledValues(now)
         amp.gain.setTargetAtTime(0.0001, now, 0.02)
-        stopAll(now + 0.1)
+        stop(now + 0.2)
+        this.active.delete(voice)
+      },
+    }
+    this.active.add(voice)
+    return voice
+  }
+
+  /**
+   * Accompaniment note: the same preset, but struck and decaying so patterns
+   * stay rhythmic instead of smearing into one held chord. `hold` is how long
+   * the note stays up before it starts to fall away.
+   */
+  playStab(
+    midi: number,
+    options: { velocity?: number; hold?: number; when?: number; voice?: VoiceName } = {},
+  ): ActiveVoice | null {
+    const context = this.context
+    const bus = this.bus(options.voice ?? 'keys')
+    if (!context || !bus) return null
+
+    const preset = this.preset
+    const velocity = clamp(options.velocity ?? 0.6, 0.05, 1)
+    const when = options.when ?? context.currentTime
+    const hold = options.hold ?? 0.9
+    const frequency = midiToFrequency(midi)
+
+    const amp = context.createGain()
+    amp.gain.value = 0
+    amp.connect(bus)
+
+    const { stop } = this.buildTone(context, preset, frequency, velocity, when, amp)
+
+    // Slow-attack presets would swallow a short pattern note, so the
+    // accompaniment caps the attack and always decays.
+    const attack = Math.min(preset.amp.attack, 0.06)
+    const peak = preset.amp.level * Math.pow(velocity, 1.35) * 0.85
+    const tail = 0.5
+    amp.gain.setValueAtTime(0.0001, when)
+    amp.gain.linearRampToValueAtTime(peak, when + attack)
+    amp.gain.linearRampToValueAtTime(peak * 0.6, when + attack + Math.min(0.25, hold))
+    const releaseStart = when + Math.max(attack + 0.02, hold)
+    amp.gain.setTargetAtTime(0.0001, releaseStart, tail / 3)
+
+    const endsAt = releaseStart + tail
+    stop(endsAt + 0.2)
+
+    const voice: ActiveVoice = {
+      endsAt,
+      release: (at) => {
+        amp.gain.cancelScheduledValues(at)
+        amp.gain.setTargetAtTime(0.0001, at, 0.12)
+        stop(at + 0.8)
+      },
+      kill: () => {
+        const now = context.currentTime
+        amp.gain.cancelScheduledValues(now)
+        amp.gain.setTargetAtTime(0.0001, now, 0.02)
+        stop(now + 0.1)
       },
     }
     this.track(voice)
@@ -270,7 +440,7 @@ export class AudioEngine {
     const bus = this.bus('pad')
     if (!context || !bus) return null
 
-    const velocity = Math.min(1, Math.max(0.05, options.velocity ?? 0.5))
+    const velocity = clamp(options.velocity ?? 0.5, 0.05, 1)
     const when = options.when ?? context.currentTime
     const frequency = midiToFrequency(midi)
 
@@ -332,13 +502,13 @@ export class AudioEngine {
     return voice
   }
 
-  /** Rounded sine bass, sits under the chord without muddying it. */
+  /** Rounded synth bass, sits under the chord without muddying it. */
   playBass(midi: number, options: { velocity?: number; hold?: number; when?: number } = {}) {
     const context = this.context
     const bus = this.bus('bass')
     if (!context || !bus) return null
 
-    const velocity = Math.min(1, Math.max(0.05, options.velocity ?? 0.6))
+    const velocity = clamp(options.velocity ?? 0.6, 0.05, 1)
     const when = options.when ?? context.currentTime
     const hold = options.hold ?? 0.8
 
@@ -388,7 +558,7 @@ export class AudioEngine {
   /** Metronome click. `accent` marks beat one. */
   playClick(when: number, accent: boolean) {
     const context = this.context
-    const bus = this.bus('bell')
+    const bus = this.bus('click')
     if (!context || !bus) return
 
     const osc = context.createOscillator()
@@ -405,107 +575,14 @@ export class AudioEngine {
   }
 
   /**
-   * Sustained synth lead — the 신디 sound a worship keyboardist plays over the
-   * piano. Unlike the piano voice it does not decay: it holds at full body
-   * until the key comes up, which is what makes held chords and long melody
-   * notes possible.
-   */
-  playSynth(
-    midi: number,
-    options: { velocity?: number; when?: number } = {},
-  ): ActiveVoice | null {
-    const context = this.context
-    const bus = this.bus('synth')
-    if (!context || !bus) return null
-
-    const velocity = Math.min(1, Math.max(0.05, options.velocity ?? 0.6))
-    const when = options.when ?? context.currentTime
-    const frequency = midiToFrequency(midi)
-
-    const amp = context.createGain()
-    amp.gain.value = 0
-    amp.connect(bus)
-
-    const filter = context.createBiquadFilter()
-    filter.type = 'lowpass'
-    filter.Q.value = 6
-    // Filter envelope: a bright bloom that settles back, the classic synth "wow".
-    const peakCutoff = Math.min(11000, frequency * 9 + velocity * 3500)
-    filter.frequency.setValueAtTime(frequency * 2, when)
-    filter.frequency.linearRampToValueAtTime(peakCutoff, when + 0.07)
-    filter.frequency.exponentialRampToValueAtTime(
-      Math.max(frequency * 3, peakCutoff * 0.42),
-      when + 0.55,
-    )
-    filter.connect(amp)
-
-    const oscillators: OscillatorNode[] = []
-    // Two detuned saws for width, a square underneath for body.
-    const layers: Array<[OscillatorType, number, number]> = [
-      ['sawtooth', -9, 0.16],
-      ['sawtooth', 9, 0.16],
-      ['square', 0, 0.09],
-    ]
-    for (const [type, detune, level] of layers) {
-      const osc = context.createOscillator()
-      osc.type = type
-      osc.frequency.value = frequency
-      osc.detune.value = detune
-      const gain = context.createGain()
-      gain.gain.value = level
-      osc.connect(gain)
-      gain.connect(filter)
-      osc.start(when)
-      oscillators.push(osc)
-    }
-
-    amp.gain.setValueAtTime(0.0001, when)
-    amp.gain.linearRampToValueAtTime(velocity * 0.42, when + 0.02)
-    amp.gain.linearRampToValueAtTime(velocity * 0.34, when + 0.25)
-
-    const stopAll = (at: number) => {
-      for (const osc of oscillators) {
-        try {
-          osc.stop(at)
-        } catch {
-          /* already stopped */
-        }
-      }
-    }
-
-    const voice: ActiveVoice = {
-      endsAt: Number.POSITIVE_INFINITY,
-      release: (at) => {
-        amp.gain.cancelScheduledValues(at)
-        amp.gain.setValueAtTime(amp.gain.value, at)
-        amp.gain.setTargetAtTime(0.0001, at, 0.09)
-        stopAll(at + 0.8)
-        this.active.delete(voice)
-      },
-      kill: () => {
-        const now = context.currentTime
-        amp.gain.cancelScheduledValues(now)
-        amp.gain.setTargetAtTime(0.0001, now, 0.02)
-        stopAll(now + 0.2)
-        this.active.delete(voice)
-      },
-    }
-    this.active.add(voice)
-    return voice
-  }
-
-  /**
    * Holds a note under a stable id, replacing whatever was sounding there. Used
-   * by both the melody hand and the computer keyboard: the note rings until the
-   * matching `releaseNote` call.
+   * by both the on-screen keys and the computer keyboard: the note rings until
+   * the matching `releaseNote` call.
    */
-  holdNote(id: string, midi: number, velocity: number, instrument: Instrument = 'piano') {
+  holdNote(id: string, midi: number, velocity: number) {
     const existing = this.sustaining.get(id)
     if (existing) existing.release(this.currentTime)
-    const voice =
-      instrument === 'synth'
-        ? this.playSynth(midi, { velocity })
-        : this.playPiano(midi, { velocity, hold: 4 })
+    const voice = this.playLead(midi, { velocity })
     if (voice) this.sustaining.set(id, voice)
   }
 

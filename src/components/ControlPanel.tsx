@@ -1,12 +1,13 @@
 import type { ReactNode } from 'react'
 import { KEYS, PROGRESSIONS, degreeToMidi, noteName, type ChordColor } from '../lib/theory'
 import { PATTERNS } from '../lib/patterns'
-import type { Instrument } from '../lib/audio'
+import { SYNTH_PRESETS, findPreset, type SynthPresetId } from '../lib/synths'
 import type { Layout } from '../lib/keymap'
 
 export interface Settings {
   layout: Layout
-  instrument: Instrument
+  /** Which synth character the whole rack plays with. */
+  preset: SynthPresetId
   /** MIDI note the leftmost key plays (the tonic, in the easy layout). */
   baseMidi: number
   keyIndex: number
@@ -20,6 +21,10 @@ export interface Settings {
   volume: number
   reverb: number
   padLevel: number
+  /** 0-1: how far apart a soft and a hard press sound. */
+  touch: number
+  /** 0-1: how much a hard press dirties the tone. */
+  drive: number
 }
 
 interface Props {
@@ -137,13 +142,8 @@ function Toggle({
 }
 
 const LAYOUT_OPTIONS: Array<{ value: Layout; label: string; hint: string }> = [
-  { value: 'chromatic', label: '피아노 건반', hint: '흰건반 · 검은건반' },
+  { value: 'chromatic', label: '피아노식', hint: '흰건반 · 검은건반' },
   { value: 'easy', label: '쉬운 건반', hint: '틀린 음 없음' },
-]
-
-const INSTRUMENT_OPTIONS: Array<{ value: Instrument; label: string; hint: string }> = [
-  { value: 'piano', label: '피아노', hint: '치면 사라지는 소리' },
-  { value: 'synth', label: '신디', hint: '누른 만큼 지속' },
 ]
 
 const COLOR_OPTIONS: Array<{ value: ChordColor; label: string; hint: string }> = [
@@ -155,6 +155,7 @@ const COLOR_OPTIONS: Array<{ value: ChordColor; label: string; hint: string }> =
 
 export function ControlPanel({ settings, onChange }: Props) {
   const meter = PATTERNS.find((pattern) => pattern.id === settings.patternId)?.beatsPerBar ?? 4
+  const preset = findPreset(settings.preset)
 
   // The easy layout starts on the tonic, so show the note the leftmost key
   // really plays instead of the internal reference pitch.
@@ -190,28 +191,6 @@ export function ControlPanel({ settings, onChange }: Props) {
           </div>
         </Group>
 
-        <Group label="악기 (내가 치는 소리)">
-          <div className="grid grid-cols-2 gap-1.5">
-            {INSTRUMENT_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => onChange('instrument', option.value)}
-                onPointerUp={blurOnPointerUp}
-                className={[
-                  'rounded-xl border px-2 py-2.5 text-center transition',
-                  settings.instrument === option.value
-                    ? 'border-mint-400 bg-mint-400/15 text-mint-400'
-                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25',
-                ].join(' ')}
-              >
-                <span className="block text-sm font-semibold">{option.label}</span>
-                <span className="block text-[0.6rem] text-white/35">{option.hint}</span>
-              </button>
-            ))}
-          </div>
-        </Group>
-
         <Field label="건반 높이 (옥타브)" hint={`${lowestLabel} 부터 · Z X`}>
           <input
             type="range"
@@ -224,20 +203,86 @@ export function ControlPanel({ settings, onChange }: Props) {
         </Field>
       </Section>
 
-      <Section title="조성 · 화성">
-        <Field label="키 (조)" hint={`${KEYS[settings.keyIndex].name} 장조`}>
-          <select
-            className={selectClass}
-            value={settings.keyIndex}
-            onChange={(event) => onChange('keyIndex', Number(event.target.value))}
-          >
-            {KEYS.map((key, index) => (
-              <option key={key.name} value={index}>
-                {key.name} 장조 · 나란한단조 {KEYS[(index + 9) % 12].name}m
-              </option>
+      <Section title="신디 음색">
+        <Group label="음색" hint={preset.hint}>
+          <div className="grid grid-cols-3 gap-1.5">
+            {SYNTH_PRESETS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => onChange('preset', option.id)}
+                onPointerUp={blurOnPointerUp}
+                className={[
+                  'rounded-xl border px-1 py-2.5 text-center transition',
+                  settings.preset === option.id
+                    ? 'border-mint-400 bg-mint-400/15 text-mint-400'
+                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25',
+                ].join(' ')}
+              >
+                <span className="block text-sm font-semibold">{option.name}</span>
+                <span className="block text-[0.58rem] leading-tight text-white/35">
+                  {option.hint}
+                </span>
+              </button>
             ))}
-          </select>
+          </div>
+        </Group>
+        <p className="-mt-1 text-xs leading-relaxed text-white/40">{preset.description}</p>
+
+        <Field label="세게 칠수록 반응" hint={`${Math.round(settings.touch * 100)}%`}>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(settings.touch * 100)}
+            onChange={(event) => onChange('touch', Number(event.target.value) / 100)}
+          />
         </Field>
+        <p className="-mt-1 text-xs leading-relaxed text-white/40">
+          올릴수록 여린 소리와 센 소리의 차이가 커집니다. 0%면 늘 같은 세기로 울립니다.
+        </p>
+
+        <Field
+          label="디스토션 (세게 칠 때 일그러짐)"
+          hint={`${Math.round(settings.drive * 100)}%`}
+        >
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(settings.drive * 100)}
+            onChange={(event) => onChange('drive', Number(event.target.value) / 100)}
+          />
+        </Field>
+        <p className="-mt-1 text-xs leading-relaxed text-white/40">
+          약하게 치면 깨끗하고, 세게 칠수록 거칠어집니다.
+        </p>
+      </Section>
+
+      <Section title="조성 · 화성">
+        <Group
+          label="조 (장조)"
+          hint={`${musicalKey.name} 장조 · 나란한단조 ${KEYS[(settings.keyIndex + 9) % 12].name}m`}
+        >
+          <div className="grid grid-cols-6 gap-1">
+            {KEYS.map((key, index) => (
+              <button
+                key={key.name}
+                type="button"
+                onClick={() => onChange('keyIndex', index)}
+                onPointerUp={blurOnPointerUp}
+                className={[
+                  'rounded-lg border py-1.5 text-center text-xs font-bold tabular-nums transition',
+                  settings.keyIndex === index
+                    ? 'border-glow-400 bg-glow-400/15 text-glow-400'
+                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/25',
+                ].join(' ')}
+              >
+                {key.name}
+              </button>
+            ))}
+          </div>
+        </Group>
 
         <Group label="화음 색깔">
           <div className="grid grid-cols-4 gap-1.5">
@@ -345,7 +390,10 @@ export function ControlPanel({ settings, onChange }: Props) {
             onChange={(event) => onChange('reverb', Number(event.target.value) / 100)}
           />
         </Field>
-        <Field label="패드 (스트링) 음량" hint={`${Math.round(settings.padLevel * 100)}%`}>
+        <Field
+          label="패드 (깔아주는 소리) 음량"
+          hint={`${Math.round(settings.padLevel * 100)}%`}
+        >
           <input
             type="range"
             min={0}

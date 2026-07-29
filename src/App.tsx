@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AudioEngine, type ActiveVoice } from './lib/audio'
+import { DEFAULT_PRESET_ID, findPreset } from './lib/synths'
+import { StrikeTracker, dynamicLabel } from './lib/dynamics'
 import { Sequencer, findPattern } from './lib/patterns'
 import {
   KEYS,
@@ -26,7 +28,7 @@ import { HelpPanel } from './components/HelpPanel'
 
 const DEFAULT_SETTINGS: Settings = {
   layout: 'chromatic', // the real white/black piano keyboard
-  instrument: 'piano',
+  preset: DEFAULT_PRESET_ID,
   baseMidi: 60, // C4 — middle C, with the melody range sitting above it
   keyIndex: 7, // G — the key most Korean worship sets land in
   color: 'add9',
@@ -39,6 +41,8 @@ const DEFAULT_SETTINGS: Settings = {
   volume: 0.8,
   reverb: 0.3,
   padLevel: 0.5,
+  touch: 0.6,
+  drive: 0.35,
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -53,8 +57,11 @@ export default function App() {
   const [beatInBar, setBeatInBar] = useState(0)
   const [activeNotes, setActiveNotes] = useState<Set<number>>(() => new Set())
   const [sustainOn, setSustainOn] = useState(false)
+  /** Force of the last note played, for the dynamics meter. */
+  const [lastVelocity, setLastVelocity] = useState(0.55)
 
   const key = KEYS[settings.keyIndex]
+  const preset = findPreset(settings.preset)
   const chords = useMemo(() => diatonicChords(key, settings.color), [key, settings.color])
   const pattern = findPattern(settings.patternId)
   const progression =
@@ -96,6 +103,8 @@ export default function App() {
   /** Notes released but still ringing because the pedal is down. */
   const pedalledRef = useRef(new Set<number>())
   const sustainRef = useRef(false)
+  /** Turns the timing of physical keypresses into how hard they were played. */
+  const strikeRef = useRef(new StrikeTracker())
 
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -177,7 +186,7 @@ export default function App() {
     if (!engine.ready || !voicing) return
     engine.playBass(voicing.bass, { velocity: velocity * 0.9, hold: 1.2 })
     voicing.notes.forEach((note, index) => {
-      engine.playPiano(note, {
+      engine.playStab(note, {
         velocity: velocity * (index === 0 ? 1 : 0.88),
         hold: 1.4,
         when: engine.currentTime + index * 0.012,
@@ -205,13 +214,14 @@ export default function App() {
   // The computer keyboard as an instrument
   // ---------------------------------------------------------------------------
 
-  const noteDown = useCallback(async (midi: number, velocity = 0.7) => {
+  const noteDown = useCallback(async (midi: number, velocity = 0.55) => {
     const engine = getEngine()
     // Playing a key is a user gesture, so it may legally wake the audio context.
     if (!engine.ready) await engine.start()
-    engine.holdNote(`key-${midi}`, midi, velocity, settingsRef.current.instrument)
+    engine.holdNote(`key-${midi}`, midi, velocity)
     heldNotesRef.current.add(midi)
     setActiveNotes(new Set(heldNotesRef.current))
+    setLastVelocity(velocity)
   }, [])
 
   const noteUp = useCallback((midi: number) => {
@@ -259,7 +269,13 @@ export default function App() {
       if (midi !== undefined) {
         event.preventDefault()
         if (event.repeat) return // auto-repeat would machine-gun the note
-        void noteDown(midi)
+        // A key switch reports no force, so the strike is read from how fast
+        // the notes are coming, with Shift as an explicit accent.
+        const velocity = strikeRef.current.strike(event.timeStamp, {
+          accent: event.shiftKey,
+          sensitivity: settingsRef.current.touch,
+        })
+        void noteDown(midi, velocity)
         return
       }
 
@@ -271,7 +287,12 @@ export default function App() {
         selectDegree(chordIndex)
         // Always sound it, so the number row is an instrument too, not just a
         // setting. Softer while the pattern is running so it doesn't clutter.
-        if (getEngine().ready) strikeChord(settingsRef.current.autoPlay ? 0.5 : 0.72)
+        const force = strikeRef.current.strike(event.timeStamp, {
+          accent: event.shiftKey,
+          sensitivity: settingsRef.current.touch,
+        })
+        setLastVelocity(force)
+        if (getEngine().ready) strikeChord(force * (settingsRef.current.autoPlay ? 0.7 : 1))
         return
       }
 
@@ -341,6 +362,8 @@ export default function App() {
       heldNotesRef.current.clear()
       setActiveNotes(new Set())
       releasePedal()
+      // The gap across a tab-away says nothing about how hard the next note is.
+      strikeRef.current.reset()
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -394,6 +417,8 @@ export default function App() {
     engine.setMasterVolume(settingsRef.current.volume)
     engine.setReverb(settingsRef.current.reverb)
     engine.setVoiceLevel('pad', settingsRef.current.padLevel)
+    engine.setPreset(settingsRef.current.preset)
+    engine.setDrive(settingsRef.current.drive)
 
     const voicing = voicingRef.current ?? voiceChord(chordsRef.current[degreeRef.current])
     voicingRef.current = voicing
@@ -431,6 +456,15 @@ export default function App() {
     engine.setReverb(settings.reverb)
     engine.setVoiceLevel('pad', settings.padLevel)
   }, [settings.volume, settings.reverb, settings.padLevel])
+
+  // Tone changes apply to the next note; whatever is ringing keeps its sound.
+  useEffect(() => {
+    getEngine().setPreset(settings.preset)
+  }, [settings.preset])
+
+  useEffect(() => {
+    getEngine().setDrive(settings.drive)
+  }, [settings.drive])
 
   // Switching to a pattern without a pad should drop the pad immediately.
   useEffect(() => {
@@ -470,15 +504,15 @@ export default function App() {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.3em] text-glow-500">
-            Worship Piano
+            Worship Synth
           </p>
           <h1 className="mt-1 text-3xl font-black tracking-tight text-white sm:text-4xl">
-            키보드로 치는 <span className="text-glow-400">찬양 반주</span>
+            키보드로 치는 <span className="text-glow-400">찬양 신디</span>
           </h1>
           <p className="mt-1.5 max-w-xl text-sm text-white/50">
             {settings.layout === 'chromatic'
-              ? '컴퓨터 키보드가 그대로 피아노 건반이 됩니다. 지금 코드에 어울리는 음은 초록색으로 켜지고, 반주는 박자에 맞춰 알아서 흐릅니다.'
-              : '모든 건반이 지금 조의 음이라 틀린 음이 나오지 않습니다. 초록색 건반은 지금 코드에 어울리는 음이고, 반주는 박자에 맞춰 알아서 흐릅니다.'}
+              ? '컴퓨터 키보드가 그대로 신디사이저 건반이 됩니다. 음색을 고르고, 세게 칠수록 크고 거칠게 울립니다.'
+              : '모든 건반이 지금 조의 음이라 틀린 음이 나오지 않습니다. 음색을 고르고, 세게 칠수록 크고 거칠게 울립니다.'}
           </p>
         </div>
 
@@ -511,7 +545,8 @@ export default function App() {
               baseMidi={settings.baseMidi}
               activeNotes={activeNotes}
               chordPitchClasses={chordPitchClasses}
-              onNoteDown={(midi) => void noteDown(midi)}
+              sensitivity={settings.touch}
+              onNoteDown={(midi, velocity) => void noteDown(midi, velocity)}
               onNoteUp={noteUp}
             />
           ) : (
@@ -521,7 +556,8 @@ export default function App() {
               activeNotes={activeNotes}
               scalePitchClasses={scalePitchClasses}
               chordPitchClasses={chordPitchClasses}
-              onNoteDown={(midi) => void noteDown(midi)}
+              sensitivity={settings.touch}
+              onNoteDown={(midi, velocity) => void noteDown(midi, velocity)}
               onNoteUp={noteUp}
             />
           )}
@@ -547,6 +583,36 @@ export default function App() {
               어울리는 음
             </span>
           </p>
+
+          {/* The dynamics meter. A computer key cannot report force, so this is
+              what the app inferred from the last strike — seeing it is how the
+              player learns that fast playing and Shift mean "harder". */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+            <div>
+              <p className="text-[0.65rem] uppercase tracking-[0.2em] text-white/40">음색</p>
+              <p className="text-lg font-bold text-mint-400">{preset.name}</p>
+            </div>
+            <div className="h-10 w-px bg-white/10" />
+            <div className="min-w-[11rem] flex-1">
+              <p className="flex items-baseline justify-between text-[0.65rem] uppercase tracking-[0.2em] text-white/40">
+                <span>세기</span>
+                <span className="font-bold normal-case tabular-nums text-white/70">
+                  {dynamicLabel(lastVelocity)} · {Math.round(lastVelocity * 100)}
+                </span>
+              </p>
+              <span className="mt-1.5 block h-2 w-full overflow-hidden rounded-full bg-white/10">
+                <span
+                  className="block h-full rounded-full bg-gradient-to-r from-mint-400 via-glow-400 to-red-400 transition-[width] duration-100"
+                  style={{ width: `${Math.round(lastVelocity * 100)}%` }}
+                />
+              </span>
+            </div>
+            <p className="text-xs leading-relaxed text-white/40">
+              빠르게 칠수록 · <b className="text-white/70">Shift</b>와 함께 누를수록 세게.
+              <br />
+              화면 건반은 아래쪽을 누를수록, 터치·펜은 실제로 세게 누를수록.
+            </p>
+          </div>
 
           <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
             <div>

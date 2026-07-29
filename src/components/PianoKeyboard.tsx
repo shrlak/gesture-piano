@@ -11,7 +11,9 @@ interface Props {
   scalePitchClasses: Set<number>
   /** Pitch classes of the chord sounding right now, highlighted as safe notes. */
   chordPitchClasses: Set<number>
-  onNoteDown: (midi: number) => void
+  /** How far apart a soft and a hard press should sound. */
+  sensitivity: number
+  onNoteDown: (midi: number, velocity: number) => void
   onNoteUp: (midi: number) => void
 }
 
@@ -43,13 +45,14 @@ export function PianoKeyboard({
   activeNotes,
   scalePitchClasses,
   chordPitchClasses,
+  sensitivity,
   onNoteDown,
   onNoteUp,
 }: Props) {
   const { keys, whiteCount } = buildKeys(baseMidi)
   const whiteWidth = 100 / whiteCount
   const blackWidth = whiteWidth * 0.62
-  const { keyHandlers } = useKeyPointer(onNoteDown, onNoteUp)
+  const { keyHandlers } = useKeyPointer(onNoteDown, onNoteUp, sensitivity)
 
   const whites = keys.filter((key) => !key.black)
   const blacks = keys.filter((key) => key.black)
